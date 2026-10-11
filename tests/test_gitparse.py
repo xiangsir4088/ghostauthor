@@ -95,6 +95,22 @@ class TrailerBlockTests(unittest.TestCase):
             gitparse._parse_log("not framed at all")
         self.assertEqual(ctx.exception.code, "malformed-output")
 
+    def test_unborn_head_is_no_commits(self):
+        # A repo with everything staged but nothing committed must be
+        # classified as no-commits (exit 2), not a generic git failure.
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        from ghostauthor.gitparse import GitError, iter_commits
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "empty"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)],
+                           check=True, capture_output=True)
+            with self.assertRaises(GitError) as ctx:
+                iter_commits(str(repo))
+            self.assertEqual(ctx.exception.code, "no-commits")
+
 
 if __name__ == "__main__":
     unittest.main()

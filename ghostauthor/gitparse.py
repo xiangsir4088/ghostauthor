@@ -66,7 +66,10 @@ def _run_git(args: List[str]) -> str:
         err = (proc.stderr or proc.stdout).strip()
         if "not a git repository" in err:
             raise GitError("not-a-repo", err)
-        if "does not have any commits" in err:
+        # Both phrasings mean the same real-world state: a repo with an
+        # unborn HEAD (common in the vibe-coding era: everything staged,
+        # nothing committed). Found in the wild on a first production run.
+        if "does not have any commits" in err or "ambiguous argument 'HEAD'" in err:
             raise GitError("no-commits", err)
         raise GitError("git-failed", err)
     return proc.stdout
