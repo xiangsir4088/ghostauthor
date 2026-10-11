@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ghostauthor"
-version = "0.1.0"
+version = "0.2.0"
 description = "Deterministic AI code provenance ledger: who signed the commits in your repo — auditable, reproducible, no LLM. Stdlib only."
 readme = "README.md"
 requires-python = ">=3.9"
