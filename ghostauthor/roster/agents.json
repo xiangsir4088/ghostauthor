@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "agents": [
+    {
+      "id": "claude",
+      "display_name": "Claude (Anthropic)",
+      "name_patterns": ["^Claude\\b", "^Claude "],
+      "email_domains": ["anthropic.com"]
+    },
+    {
+      "id": "codex",
+      "display_name": "Codex (OpenAI)",
+      "name_patterns": ["^Codex\\b", "^OpenAI Codex\\b"],
+      "email_domains": ["openai.com"]
+    },
+    {
+      "id": "gpt",
+      "display_name": "GPT (OpenAI)",
+      "name_patterns": ["^GPT\\b", "^OpenAI\\b"],
+      "email_domains": []
+    },
+    {
+      "id": "gemini",
+      "display_name": "Gemini (Google)",
+      "name_patterns": ["^Gemini\\b", "^Google Gemini\\b"],
+      "email_domains": ["google.com"]
+    },
+    {
+      "id": "copilot",
+      "display_name": "GitHub Copilot",
+      "name_patterns": ["^GitHub Copilot\\b", "^Copilot\\b"],
+      "email_domains": []
+    },
+    {
+      "id": "cursor",
+      "display_name": "Cursor",
+      "name_patterns": ["^Cursor\\b"],
+      "email_domains": ["cursor.com"]
+    },
+    {
+      "id": "aider",
+      "display_name": "Aider",
+      "name_patterns": ["^Aider\\b", "^AiderChat\\b"],
+      "email_domains": ["aider.chat"]
+    },
+    {
+      "id": "atomcode",
+      "display_name": "AtomCode (AtomGit)",
+      "name_patterns": ["^AtomCode\\b"],
+      "email_domains": ["atomgit.com"]
+    }
+  ]
+}

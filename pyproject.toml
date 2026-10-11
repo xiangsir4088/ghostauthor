@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghostauthor"
+version = "0.1.0"
+description = "Deterministic AI code provenance ledger: who signed the commits in your repo — auditable, reproducible, no LLM. Stdlib only."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["ai", "provenance", "git", "audit", "mcp", "ci", "attribution"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+]
+
+[project.scripts]
+ghostauthor = "ghostauthor.cli:main"
+
+[project.optional-dependencies]
+dev = []
+
+[tool.setuptools.packages.find]
+include = ["ghostauthor*"]
+
+[tool.setuptools.package-data]
+ghostauthor = ["roster/*.json"]
