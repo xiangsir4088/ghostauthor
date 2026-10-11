@@ -66,6 +66,41 @@ def load_roster(path: Union[str, Path]) -> Roster:
     return validate_roster(raw, source=str(path))
 
 
+def load_roster_dir(path: Union[str, Path]) -> Roster:
+    """Load every *.json roster in a directory and merge them.
+
+    Files are processed in sorted filename order (deterministic). Each
+    file is validated on its own; a duplicate agent id ACROSS files is
+    rejected (roster-dir-dup) — conflicts must be resolved by a human,
+    never silently by merge order. The merged roster reports the maximum
+    of the constituent versions.
+    """
+    d = Path(path)
+    if not d.is_dir():
+        raise _fail("roster-dir-missing", f"no such directory: {d}")
+    files = sorted(d.glob("*.json"))
+    if not files:
+        raise _fail("roster-dir-empty", f"no roster files in {d}")
+    agents: List[AgentRule] = []
+    source_of: dict = {}  # agent id -> filename of first occurrence
+    version = 0
+    for f in files:
+        try:
+            raw = json.loads(f.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise _fail("roster-json-invalid", f"{f.name}: {exc}") from exc
+        r = validate_roster(raw, source=f.name)
+        version = max(version, r.version)
+        for a in r.agents:
+            if a.id in source_of:
+                raise _fail("roster-dir-dup",
+                            f"duplicate id {a.id!r} in {source_of[a.id]} "
+                            f"and {f.name}")
+            source_of[a.id] = f.name
+            agents.append(a)
+    return Roster(version=version, agents=agents, source=str(d))
+
+
 def validate_roster(raw: object, source: str = "<builtin>") -> Roster:
     if not isinstance(raw, dict):
         raise _fail("roster-top-level", "expected a JSON object")

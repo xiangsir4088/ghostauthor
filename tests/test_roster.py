@@ -96,6 +96,56 @@ class RosterValidationTests(unittest.TestCase):
         raw["agents"] = []
         self._expect(raw, "roster-agents")
 
+    # ---- roster-dir: merge semantics are pinned ----
+
+    def _write(self, d, name, obj):
+        import json
+        (d / name).write_text(json.dumps(obj), encoding="utf-8")
+
+    def test_roster_dir_merges_in_sorted_order(self):
+        import tempfile
+        from pathlib import Path
+        from ghostauthor.roster import load_roster_dir
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            self._write(d, "b-second.json", {"version": 1, "agents": [
+                {"id": "beta", "display_name": "Beta",
+                 "name_patterns": ["^Beta\\b"], "email_domains": []}]})
+            self._write(d, "a-first.json", {"version": 2, "agents": [
+                {"id": "alpha", "display_name": "Alpha",
+                 "name_patterns": ["^Alpha\\b"], "email_domains": []}]})
+            r = load_roster_dir(d)
+            self.assertEqual([a.id for a in r.agents], ["alpha", "beta"])
+            self.assertEqual(r.version, 2)  # max of the constituents
+
+    def test_roster_dir_rejects_cross_file_duplicate(self):
+        import tempfile
+        from pathlib import Path
+        from ghostauthor.roster import load_roster_dir
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            self._write(d, "a.json", {"version": 1, "agents": [
+                {"id": "same", "display_name": "A",
+                 "name_patterns": ["^A\\b"], "email_domains": []}]})
+            self._write(d, "b.json", {"version": 1, "agents": [
+                {"id": "same", "display_name": "B",
+                 "name_patterns": ["^B\\b"], "email_domains": []}]})
+            with self.assertRaises(RosterError) as ctx:
+                load_roster_dir(d)
+            self.assertIn("roster-dir-dup", str(ctx.exception))
+
+    def test_roster_dir_rejects_empty_or_missing(self):
+        import tempfile
+        from pathlib import Path
+        from ghostauthor.roster import load_roster_dir
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(RosterError) as ctx:
+                load_roster_dir(td)
+            self.assertIn("roster-dir-empty", str(ctx.exception))
+        with self.assertRaises(RosterError) as ctx:
+            load_roster_dir(Path(td) / "nope")
+        self.assertIn("roster-dir-missing", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

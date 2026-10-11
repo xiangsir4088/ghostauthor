@@ -9,7 +9,8 @@ import unittest
 from ghostauthor.engine import build_report
 from ghostauthor.gitparse import parse_trailer_block
 from ghostauthor.models import CommitInfo
-from ghostauthor.report import render_json, render_markdown, render_text
+from ghostauthor.report import (render_json, render_markdown, render_sarif,
+                                render_text)
 from ghostauthor.roster import validate_roster
 
 ROSTER = validate_roster({
@@ -47,6 +48,57 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn("100.0%", t)
         self.assertIn("agent", m)
         self.assertIn("| agent |", m)
+
+    # ---- SARIF: schema shape + finding/gate mapping pinned ----
+
+    @staticmethod
+    def _minimal_report():
+        # One unsigned commit, no gate: the empty SARIF case.
+        msg = "c" * 40 + "\n\nplain message, no trailers"
+        c = CommitInfo(sha="c" * 40, parent_shas=[], author_name="h",
+                       author_email="h@x.io", authored_at=100, message=msg,
+                       trailers=parse_trailer_block(msg),
+                       lines_added=1, lines_removed=0)
+        return build_report([c], ROSTER)
+
+    def test_sarif_byte_stable_and_valid(self):
+        import json as _json
+        s1 = render_sarif(self._minimal_report())
+        self.assertEqual(s1, render_sarif(self._minimal_report()))
+        doc = _json.loads(s1)
+        self.assertEqual(doc["version"], "2.1.0")
+        run = doc["runs"][0]
+        self.assertEqual(run["tool"]["driver"]["name"], "ghostauthor")
+        # no findings, no gate: both lists stay empty
+        self.assertEqual(run["results"], [])
+        self.assertEqual(run["tool"]["driver"]["rules"], [])
+
+    def test_sarif_maps_findings_and_gate(self):
+        import json as _json
+        from ghostauthor.gitparse import parse_trailer_block
+
+        def c(sha, ts, trailer):
+            msg = f"{sha}\n\n{trailer}"
+            return CommitInfo(sha=sha, parent_shas=[], author_name="h",
+                              author_email="h@x.io", authored_at=ts,
+                              message=msg, trailers=parse_trailer_block(msg),
+                              lines_added=1, lines_removed=0)
+
+        r = build_report(
+            [c("a" * 40, 100, "Co-Authored-By: Claude <n@anthropic.com>"),
+             c("b" * 40, 200, "Co-Authored-By: VibeBot <vibe@x.io>")],
+            ROSTER, max_ai_ratio=0.4)
+        doc = _json.loads(render_sarif(r))
+        run = doc["runs"][0]
+        rules = {x["id"] for x in run["tool"]["driver"]["rules"]}
+        self.assertIn("cosigned-unknown", rules)
+        self.assertIn("ai-ratio-gate", rules)
+        by_rule = {x["ruleId"]: x for x in run["results"]}
+        self.assertEqual(by_rule["cosigned-unknown"]["level"], "warning")
+        self.assertEqual(by_rule["ai-ratio-gate"]["level"], "error")
+        loc = by_rule["cosigned-unknown"]["locations"][0]["logicalLocations"][0]
+        self.assertEqual(loc["kind"], "commit")
+        self.assertTrue(loc["name"].startswith("b"))
 
 
 if __name__ == "__main__":

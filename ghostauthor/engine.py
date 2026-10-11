@@ -26,16 +26,28 @@ def build_report(commits: List[CommitInfo],
                  repo_path: str = ".",
                  ref: str = "HEAD",
                  session_gap_minutes: int = DEFAULT_SESSION_GAP_MINUTES,
-                 max_ai_ratio: Optional[float] = None) -> Report:
+                 max_ai_ratio: Optional[float] = None,
+                 since: Optional[int] = None,
+                 until: Optional[int] = None) -> Report:
     if session_gap_minutes <= 0:
         raise ValueError("session-gap-invalid: must be positive minutes")
     if max_ai_ratio is not None and not (0.0 <= max_ai_ratio <= 1.0):
         raise ValueError("gate-limit-invalid: must be within [0, 1]")
+    if since is not None and until is not None and since >= until:
+        raise ValueError("window-invalid: since must be before until")
     if not commits:
         raise ValueError("no-commits: nothing to aggregate")
 
+    # Time window: since INCLUSIVE, until EXCLUSIVE. Boundary semantics are
+    # pinned by tests — the same discipline as the gate boundary.
+    windowed = [c for c in commits
+                if (since is None or c.authored_at >= since)
+                and (until is None or c.authored_at < until)]
+    if not windowed:
+        raise ValueError("window-empty: no commits within the window")
+
     # Deterministic order: commit data only (authored_at + sha), never wall clock.
-    ordered = sorted(commits, key=lambda c: (c.authored_at, c.sha))
+    ordered = sorted(windowed, key=lambda c: (c.authored_at, c.sha))
     total = len(ordered)
 
     bucket_commits: Dict[str, int] = {b: 0 for b in ALL_BUCKETS}
@@ -134,6 +146,8 @@ def build_report(commits: List[CommitInfo],
         gate = {"limit": max_ai_ratio, "ratio": round(ratio, 6),
                 "breached": ratio > max_ai_ratio}
 
+    window = {"since": since, "until": until} \
+        if (since is not None or until is not None) else None
     return Report(
         repo_path=repo_path,
         ref=ref,
@@ -147,4 +161,5 @@ def build_report(commits: List[CommitInfo],
         findings=findings,
         ai_ratio=ratio,
         gate=gate,
+        window=window,
     )

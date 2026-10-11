@@ -49,8 +49,91 @@ def render_json(report: Report) -> str:
             for f in report.findings
         ],
         "gate": report.gate,
+        "window": report.window,
     }
     return json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+_RULE_INFO = {
+    "cosigned-unknown": (
+        "Signature not in roster",
+        "A commit carries a Co-Authored-By trailer that no roster rule "
+        "matched. Add the agent to the roster to make its provenance "
+        "auditable."),
+    "trailer-in-body": (
+        "Signature-shaped line outside the trailer block",
+        "A Co-Authored-By-shaped line was found in the message body, "
+        "where git does not treat it as metadata. It is ignored by "
+        "design."),
+    "trailer-no-email": (
+        "Agent signature without email",
+        "The signature matched the roster by name only; the trailer "
+        "carries no <email>."),
+    "multi-agent-commit": (
+        "Multiple agents signed one commit",
+        "The commit carries signatures of several agents; per-agent "
+        "attribution overlaps (the cap invariant)."),
+    "ai-ratio-gate": (
+        "AI-signed ratio above limit",
+        "The agent-signed commit ratio exceeds --max-ai-ratio."),
+}
+
+
+def render_sarif(report: Report) -> str:
+    """SARIF 2.1.0: findings as results, so compliance pipelines can
+    ingest the ledger without a custom adapter. Byte-stable like the
+    JSON report (sort_keys)."""
+    from . import __version__
+    rules: List[dict] = []
+    results: List[dict] = []
+
+    def _rule(rule_id: str) -> None:
+        name, short = _RULE_INFO.get(rule_id, (rule_id, ""))
+        if not any(r["id"] == rule_id for r in rules):
+            rules.append({"id": rule_id,
+                          "name": f"ghostauthor.{rule_id}",
+                          "shortDescription": {"text": short}})
+
+    for f in report.findings:
+        _rule(f.rule)
+        results.append({
+            "ruleId": f.rule,
+            "level": "warning" if f.severity == "warn" else "note",
+            "message": {"text": f"{f.evidence} — {f.detail}"},
+            "locations": [{
+                "logicalLocations": [
+                    {"name": f.evidence.split(":", 1)[0].strip(),
+                     "kind": "commit"},
+                ],
+            }],
+        })
+    if report.gate is not None and report.gate["breached"]:
+        _rule("ai-ratio-gate")
+        results.append({
+            "ruleId": "ai-ratio-gate",
+            "level": "error",
+            "message": {"text": (
+                f"ai ratio {report.gate['ratio']} exceeds limit "
+                f"{report.gate['limit']}")},
+            "locations": [],
+        })
+
+    doc = {
+        "$schema": ("https://raw.githubusercontent.com/oasis-tcs/"
+                    "sarif-spec/master/Schemata/"
+                    "sarif-schema-2.1.0.json"),
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {
+                "name": "ghostauthor",
+                "version": __version__,
+                "informationUri": "https://atomgit.com/xiangsir/ghostauthor",
+                "rules": rules,
+            }},
+            "results": results,
+        }],
+    }
+    return json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
 def _agent_table(report: Report) -> List[str]:

@@ -119,6 +119,25 @@ class EngineInvariantTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_report([], ROSTER)
 
+    # ---- time window: boundary semantics pinned, like the gate ----
+
+    def test_window_since_inclusive_until_exclusive(self):
+        commits = [mk("a", 100), mk("b", 200), mk("c", 300)]
+        r = build_report(commits, ROSTER, since=200, until=300)
+        self.assertEqual(r.total_commits, 1)
+        self.assertEqual(r.bucket_commit_shas["unsigned"], ["b"])
+        self.assertEqual(r.window, {"since": 200, "until": 300})
+
+    def test_window_empty_is_an_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            build_report([mk("a", 100)], ROSTER, since=200)
+        self.assertIn("window-empty", str(ctx.exception))
+
+    def test_window_inverted_is_an_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            build_report([mk("a", 100)], ROSTER, since=300, until=200)
+        self.assertIn("window-invalid", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

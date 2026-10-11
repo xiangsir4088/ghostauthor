@@ -106,3 +106,4 @@ class Report:
     findings: List[Finding]
     ai_ratio: float
     gate: Optional[Dict] = None
+    window: Optional[Dict] = None  # {"since": int|None, "until": int|None}; set when a window was applied

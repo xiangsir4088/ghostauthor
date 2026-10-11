@@ -35,6 +35,11 @@ audit artifact: reproducible, traceable, appealable.
 pip install git+https://atomgit.com/xiangsir/ghostauthor.git
 ghostauthor /path/to/your/repo
 ghostauthor /path/to/your/repo --format json --max-ai-ratio 0.5
+ghostauthor /path/to/your/repo --since 2026-07-01 --until 2026-10-01
+# audit a quarter, not a history (epoch, YYYY-MM-DD or ISO 8601; since is
+# inclusive, until is exclusive)
+ghostauthor /path/to/your/repo --format sarif
+# SARIF 2.1.0 for compliance pipelines
 ```
 
 No repository handy? Clone this one and build the bundled demo fixtures
@@ -128,8 +133,9 @@ These are not features. They are the things that would quietly rot the tool:
    hash-iteration luck. JSON output is byte-stable (`sort_keys`): diffable,
    CI-friendly, archive-able.
 5. **Boundary semantics are pinned by tests.** A ratio *exactly at*
-   `--max-ai-ratio` is a PASS (`>`, not `>=`). Changing the semantics
-   requires changing the test on purpose.
+   `--max-ai-ratio` is a PASS (`>`, not `>=`); a window *includes* its
+   `--since` bound and *excludes* its `--until` bound. Changing any of
+   these semantics requires changing the test on purpose.
 
 ## A traceable sample (real run, JSON fragment)
 
@@ -187,6 +193,10 @@ roster**. The builtin roster ships 8 agents; yours is probably not on it:
 - Rosters are **validated, not trusted**: duplicate ids, broken regexes,
   empty selectors are rejected with a rule id — never silently repaired. A
   silently "fixed" roster would make the verdict unauditable.
+- Teams can keep several roster files in one directory (`--roster-dir`):
+  files merge in sorted filename order, and a duplicate id *across* files
+  is rejected (`roster-dir-dup`) — conflicts are for humans to resolve,
+  never for merge order to hide.
 - Bring a test: `tests/test_roster.py` is the validator's own spec.
 
 For code contributions, read `docs/architecture.md` first — each module has
@@ -195,27 +205,32 @@ no recomputation, the MCP server does no execution). Keep it that way.
 
 ## Roadmap
 
-- [ ] v0.2 — `--since/--until` time windows (audit a quarter, not a history)
-- [ ] v0.2 — SARIF output for compliance pipelines
-- [ ] v0.2 — multiple roster files / `--roster-dir`
+- [x] v0.2 — `--since/--until` time windows (audit a quarter, not a history)
+- [x] v0.2 — SARIF 2.1.0 output for compliance pipelines
+- [x] v0.2 — multiple roster files / `--roster-dir`
 - [ ] v0.3 — branch comparison: this branch vs `main`
 - [ ] v0.3 — per-author × per-agent cross-tabulation
 - [ ] v1.0 — write path (opt-in trailer signing), with the attestation boundary documented
 
 ## Tests
 
-37 tests pin **properties**, not coverage:
+52 tests pin **properties**, not coverage:
 
 - **Reproducibility** — same repo state ⇒ identical report, regardless of input order
 - **Trailer-block semantics** — negative cases: signature in the body, signature followed by prose, CRLF messages, missing email, lowercase keys, continuation lines
 - **The validator, validated** — malformed rosters that must be rejected, each checked against its rule id
 - **The cap** — a multi-agent commit is counted once in totals; per-agent overlap is documented, not hidden
 - **Gate boundary** — exactly at the limit is a pass; a breach exits 4
+- **Window boundary** — `--since` inclusive, `--until` exclusive; an empty or inverted window is a contract error, not a silently empty report
+- **Window-bound parsing** — epoch / date / ISO 8601 resolve to the same instants; naive values are UTC; garbage is rejected
+- **Roster-dir merge** — sorted filename order, cross-file duplicate ids rejected by rule id
+- **SARIF mapping** — byte-stable; findings → results with rule descriptors; a breached gate is an `error`-level result
 - **Framing contract** — the git-output parser is pinned against crafted streams, including rejection of unframed output
 
 One click runs the whole matrix (roster → unit suite → 3 deterministic
 fixture repos → CLI exit codes → real MCP `initialize`/`tools/list`/
-`tools/call` → rendering), and prints anything it skips and why:
+`tools/call` → rendering → time window → roster-dir merge → SARIF), and
+prints anything it skips and why:
 
 ```bash
 python verify.py

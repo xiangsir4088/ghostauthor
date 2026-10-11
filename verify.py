@@ -197,10 +197,75 @@ def main() -> int:
                   f"buckets={payload['commits_by_bucket']}")
 
         step("MCP protocol: initialize / tools/list / tools/call", mcp_ok)
+
+        # 10. time window on 'mixed': since inclusive / until exclusive
+        # (mixed fixture commits: BASE_TS + i*3600, i = 0..11)
+        def window_ok():
+            base = 1767225600
+            proc = run_cli(mixed, "--format", "json",
+                           "--since", str(base + 5 * 3600))
+            check("window_rc", proc.returncode == 0,
+                  f"rc={proc.returncode} stderr={proc.stderr}")
+            data = json.loads(proc.stdout)
+            b = data["commits_by_bucket"]
+            # i=5..11: agent(6,7,10) + cosigned(9) + unsigned(5,8,11)
+            check("window_buckets", b == {"agent": 3, "cosigned": 1,
+                                          "unsigned": 3}, f"buckets={b}")
+            check("window_meta",
+                  data["window"]["since"] == base + 5 * 3600)
+            p2 = run_cli(mixed, "--format", "json",
+                         "--since", str(base + 5 * 3600),
+                         "--until", str(base + 6 * 3600))
+            d2 = json.loads(p2.stdout)
+            check("window_until_exclusive", d2["total_commits"] == 1,
+                  f"total={d2['total_commits']}")
+
+        step("CLI time window: since inclusive / until exclusive", window_ok)
+
+        # 11. roster-dir: cross-file duplicate id must be rejected
+        def roster_dir_ok():
+            import tempfile
+            from ghostauthor.roster import RosterError, load_roster_dir
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                for name, disp in (("a.json", "Alpha"),
+                                   ("b.json", "Alpha dup")):
+                    (root / name).write_text(json.dumps({
+                        "version": 1,
+                        "agents": [{"id": "alpha", "display_name": disp,
+                                    "name_patterns": ["^Alpha\\b"],
+                                    "email_domains": []}]}),
+                        encoding="utf-8")
+                try:
+                    load_roster_dir(root)
+                    raise AssertionError("cross-file duplicate was accepted")
+                except RosterError as exc:
+                    check("roster_dir_dup", "roster-dir-dup" in str(exc))
+
+        step("roster-dir: cross-file duplicate id rejected", roster_dir_ok)
+
+        # 12. SARIF output on 'mixed'
+        def sarif_ok():
+            proc = run_cli(mixed, "--format", "sarif")
+            check("sarif_rc", proc.returncode == 0,
+                  f"rc={proc.returncode} stderr={proc.stderr}")
+            doc = json.loads(proc.stdout)
+            check("sarif_version", doc["version"] == "2.1.0")
+            run = doc["runs"][0]
+            check("sarif_tool",
+                  run["tool"]["driver"]["name"] == "ghostauthor")
+            rule_ids = {r["ruleId"] for r in run["results"]}
+            check("sarif_findings",
+                  rule_ids == {"cosigned-unknown", "multi-agent-commit",
+                               "trailer-in-body"}, f"rules={rule_ids}")
+            check("sarif_rule_descriptors",
+                  len(run["tool"]["driver"]["rules"]) == 3)
+
+        step("SARIF 2.1.0: findings mapped to results + rules", sarif_ok)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    # 10. housekeeping: no stray build artifacts in the source tree
+    # 13. housekeeping: no stray build artifacts in the source tree
     def clean_ok():
         for stray in (ROOT / "build", ROOT / "dist", ROOT / "ghostauthor.egg-info"):
             check(f"clean_{stray.name}", not stray.exists())

@@ -9,14 +9,33 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
 from . import __version__
 from .engine import DEFAULT_SESSION_GAP_MINUTES, build_report
 from .gitparse import GitError, iter_commits
-from .report import render_json, render_markdown, render_text
-from .roster import RosterError, builtin_roster_path, load_roster
+from .report import render_json, render_markdown, render_sarif, render_text
+from .roster import (RosterError, builtin_roster_path, load_roster,
+                     load_roster_dir)
+
+
+def _parse_window_value(value: str) -> int:
+    """Deterministic window-bound parsing: epoch seconds, YYYY-MM-DD
+    (UTC midnight) or ISO 8601 datetime. Naive datetimes are UTC. No
+    wall clock is involved — the bound is pure data."""
+    if value.isdigit():
+        return int(value)
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(
+            f"window-bound-invalid: cannot parse {value!r} (use epoch "
+            "seconds, YYYY-MM-DD or ISO 8601)") from None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,11 +47,20 @@ def build_parser() -> argparse.ArgumentParser:
                    help="repository path (default: current directory)")
     p.add_argument("--all", action="store_true",
                    help="scan all refs instead of HEAD")
-    p.add_argument("--format", choices=["text", "json", "markdown"],
+    p.add_argument("--format", choices=["text", "json", "markdown", "sarif"],
                    default="text", dest="fmt")
     p.add_argument("--out", help="write the report to FILE instead of stdout")
     p.add_argument("--roster",
                    help="path to a custom roster JSON (default: builtin)")
+    p.add_argument("--roster-dir",
+                   help="directory of roster JSON files to merge (sorted "
+                        "filename order; mutually exclusive with --roster)")
+    p.add_argument("--since", metavar="BOUND",
+                   help="include commits with authored_at >= BOUND (epoch "
+                        "seconds, YYYY-MM-DD or ISO 8601; naive values = UTC)")
+    p.add_argument("--until", metavar="BOUND",
+                   help="include commits with authored_at < BOUND (same "
+                        "formats; the bound is exclusive)")
     p.add_argument("--session-gap", type=int,
                    default=DEFAULT_SESSION_GAP_MINUTES, metavar="MINUTES",
                    help="max gap between agent commits still counted as one "
@@ -48,9 +76,24 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
 
+    if args.roster is not None and args.roster_dir is not None:
+        print("error: roster-conflict: use --roster or --roster-dir, "
+              "not both", file=sys.stderr)
+        return 2
+
     try:
-        roster = load_roster(args.roster or builtin_roster_path())
+        if args.roster_dir is not None:
+            roster = load_roster_dir(args.roster_dir)
+        else:
+            roster = load_roster(args.roster or builtin_roster_path())
     except RosterError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        since = _parse_window_value(args.since) if args.since is not None else None
+        until = _parse_window_value(args.until) if args.until is not None else None
+    except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -67,6 +110,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             ref="all" if args.all else "HEAD",
             session_gap_minutes=args.session_gap,
             max_ai_ratio=args.max_ai_ratio,
+            since=since,
+            until=until,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -76,6 +121,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         text = render_json(report)
     elif args.fmt == "markdown":
         text = render_markdown(report)
+    elif args.fmt == "sarif":
+        text = render_sarif(report)
     else:
         text = render_text(report)
 
