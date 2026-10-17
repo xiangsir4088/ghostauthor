@@ -9,33 +9,22 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
 from . import __version__
 from .engine import DEFAULT_SESSION_GAP_MINUTES, build_report
 from .gitparse import GitError, iter_commits
+from .models import parse_window_value
 from .report import render_json, render_markdown, render_sarif, render_text
 from .roster import (RosterError, builtin_roster_path, load_roster,
                      load_roster_dir)
 
 
-def _parse_window_value(value: str) -> int:
-    """Deterministic window-bound parsing: epoch seconds, YYYY-MM-DD
-    (UTC midnight) or ISO 8601 datetime. Naive datetimes are UTC. No
-    wall clock is involved — the bound is pure data."""
-    if value.isdigit():
-        return int(value)
-    try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        raise ValueError(
-            f"window-bound-invalid: cannot parse {value!r} (use epoch "
-            "seconds, YYYY-MM-DD or ISO 8601)") from None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp())
+# The window-bound parser is pure data logic; it now lives in models.py so
+# the CLI and the web transport share one definition. This alias keeps the
+# pinned tests/test_cli.py import working unchanged.
+_parse_window_value = parse_window_value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,8 +34,12 @@ def build_parser() -> argparse.ArgumentParser:
                     "commits in your repo — auditable, reproducible, no LLM.")
     p.add_argument("path", nargs="?", default=".",
                    help="repository path (default: current directory)")
-    p.add_argument("--all", action="store_true",
-                   help="scan all refs instead of HEAD")
+    ref_group = p.add_mutually_exclusive_group()
+    ref_group.add_argument("--all", action="store_true",
+                           help="scan all refs instead of HEAD")
+    ref_group.add_argument("--ref", metavar="REF",
+                           help="scan one ref (branch/tag/commit) instead "
+                                "of HEAD")
     p.add_argument("--format", choices=["text", "json", "markdown", "sarif"],
                    default="text", dest="fmt")
     p.add_argument("--out", help="write the report to FILE instead of stdout")
@@ -98,8 +91,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     try:
-        commits = iter_commits(args.path, all_refs=args.all)
-    except GitError as exc:
+        commits = iter_commits(args.path, all_refs=args.all, ref=args.ref)
+    except (GitError, ValueError) as exc:
+        # GitError = repository problem; ValueError = a bad ref (ref-conflict
+        # / ref-invalid, reachable via the equals form --ref=-foo). Both are
+        # usage/environment errors => exit 2.
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -107,7 +103,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         report = build_report(
             commits, roster,
             repo_path=str(Path(args.path).resolve()),
-            ref="all" if args.all else "HEAD",
+            ref="all" if args.all else (args.ref or "HEAD"),
             session_gap_minutes=args.session_gap,
             max_ai_ratio=args.max_ai_ratio,
             since=since,

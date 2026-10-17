@@ -1,4 +1,4 @@
-"""One-click self-check: roster + tests + fixtures + CLI + MCP + rendering.
+"""One-click self-check: roster + tests + fixtures + CLI + MCP + web + rendering.
 
 Runs every subprocess with sys.executable (no hard-coded interpreter
 path) and prints, for each step, what passed — and prints anything it
@@ -262,10 +262,67 @@ def main() -> int:
                   len(run["tool"]["driver"]["rules"]) == 3)
 
         step("SARIF 2.1.0: findings mapped to results + rules", sarif_ok)
+
+        # 13. web: a real HTTP server — the JSON it serves is byte-identical
+        # to the CLI's, the index page loads, and per-entry errors carry the
+        # documented codes (not-a-repo => 404)
+        def web_ok():
+            import threading
+            import urllib.request
+            from http.server import ThreadingHTTPServer
+            from ghostauthor.web import Handler
+            srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            port = srv.server_address[1]
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+            try:
+                base = f"http://127.0.0.1:{port}"
+                with urllib.request.urlopen(base + "/") as resp:
+                    check("web_index_status", resp.status == 200)
+                    page = resp.read()
+                check("web_index_body",
+                      b"ghostauthor" in page and b"Run audit" in page)
+                payload = json.dumps(
+                    {"entries": [{"path": str(mixed)}]}).encode()
+                req = urllib.request.Request(
+                    base + "/api/audit", data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST")
+                with urllib.request.urlopen(req) as resp:
+                    check("web_audit_status", resp.status == 200)
+                    audit = json.loads(resp.read())
+                rep = audit["results"][0]["report"]
+                check("web_buckets",
+                      rep["commits_by_bucket"] == {"agent": 6, "cosigned": 1,
+                                                   "unsigned": 5},
+                      f"buckets={rep['commits_by_bucket']}")
+                check("web_byte_stable",
+                      rep == json.loads(
+                          run_cli(mixed, "--format", "json").stdout),
+                      "the web report differs from the CLI JSON")
+                bad = json.dumps(
+                    {"entries": [{"path": str(tmp / "nope")}]}).encode()
+                req2 = urllib.request.Request(
+                    base + "/api/audit", data=bad,
+                    headers={"Content-Type": "application/json"},
+                    method="POST")
+                with urllib.request.urlopen(req2) as resp:
+                    bad_body = json.loads(resp.read())
+                entry = bad_body["results"][0]
+                check("web_not_a_repo",
+                      entry["status"] == 404
+                      and entry["error"]["code"] == "not-a-repo",
+                      f"entry={entry}")
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+        step("web: HTTP server, JSON byte-identical to the CLI, error codes",
+             web_ok)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    # 13. housekeeping: no stray build artifacts in the source tree
+    # 14. housekeeping: no stray build artifacts in the source tree
     def clean_ok():
         for stray in (ROOT / "build", ROOT / "dist", ROOT / "ghostauthor.egg-info"):
             check(f"clean_{stray.name}", not stray.exists())

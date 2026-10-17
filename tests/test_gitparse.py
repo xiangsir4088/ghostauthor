@@ -112,5 +112,101 @@ class TrailerBlockTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, "no-commits")
 
 
+class RefExtractionTests(unittest.TestCase):
+    """Ref scoping (additive over HEAD), pinned against a real repository."""
+
+    def _build(self, root):
+        import os
+        import shutil
+        import subprocess
+        from pathlib import Path
+        repo = Path(root) / "refrepo"
+        if repo.exists():
+            shutil.rmtree(repo)
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)],
+                       check=True, capture_output=True)
+
+        def commit(ts, msg, content):
+            (repo / "f.txt").write_text(content, encoding="utf-8")
+            e = dict(os.environ)
+            e.update({"GIT_AUTHOR_NAME": "Sam",
+                      "GIT_AUTHOR_EMAIL": "sam@example.com",
+                      "GIT_COMMITTER_NAME": "Sam",
+                      "GIT_COMMITTER_EMAIL": "sam@example.com",
+                      "GIT_AUTHOR_DATE": f"{ts} +0000",
+                      "GIT_COMMITTER_DATE": f"{ts} +0000"})
+            subprocess.run(["git", "-C", str(repo), "add", "-A"],
+                           check=True, env=e, capture_output=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", msg],
+                           check=True, env=e, capture_output=True)
+
+        commit(1767225600, "one", "1\n")
+        commit(1767229200,
+               "two\n\nCo-Authored-By: Claude <noreply@anthropic.com>", "2\n")
+        # `side` branches off `two` and adds one more commit; main stays at two.
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "side"],
+                       check=True, capture_output=True)
+        commit(1767232800, "side change", "3\n")
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"],
+                       check=True, capture_output=True)
+        return repo
+
+    def test_ref_scopes_to_branch(self):
+        import tempfile
+        from ghostauthor.gitparse import iter_commits
+        with tempfile.TemporaryDirectory() as td:
+            repo = self._build(td)
+            head = iter_commits(str(repo))
+            self.assertEqual(len(head), 2)
+            side = iter_commits(str(repo), ref="side")
+            self.assertEqual(len(side), 3)
+            self.assertEqual(len({c.sha for c in side}
+                                 - {c.sha for c in head}), 1)
+
+    def test_all_refs_covers_every_branch(self):
+        import tempfile
+        from ghostauthor.gitparse import iter_commits
+        with tempfile.TemporaryDirectory() as td:
+            repo = self._build(td)
+            self.assertEqual(len(iter_commits(str(repo), all_refs=True)), 3)
+
+    def test_ref_conflict_is_rejected(self):
+        import tempfile
+        from ghostauthor.gitparse import iter_commits
+        with tempfile.TemporaryDirectory() as td:
+            repo = self._build(td)
+            with self.assertRaises(ValueError) as ctx:
+                iter_commits(str(repo), all_refs=True, ref="main")
+            self.assertIn("ref-conflict", str(ctx.exception))
+
+    def test_ref_starting_with_dash_is_rejected(self):
+        import tempfile
+        from ghostauthor.gitparse import iter_commits
+        with tempfile.TemporaryDirectory() as td:
+            repo = self._build(td)
+            with self.assertRaises(ValueError) as ctx:
+                iter_commits(str(repo), ref="-e")
+            self.assertIn("ref-invalid", str(ctx.exception))
+
+    def test_missing_path_is_not_a_repo(self):
+        import tempfile
+        from pathlib import Path
+        from ghostauthor.gitparse import GitError, iter_commits
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(GitError) as ctx:
+                iter_commits(str(Path(td) / "does-not-exist"))
+            self.assertEqual(ctx.exception.code, "not-a-repo")
+
+    def test_unknown_ref_is_git_failed(self):
+        import tempfile
+        from ghostauthor.gitparse import GitError, iter_commits
+        with tempfile.TemporaryDirectory() as td:
+            repo = self._build(td)
+            with self.assertRaises(GitError) as ctx:
+                iter_commits(str(repo), ref="no-such-branch")
+            self.assertEqual(ctx.exception.code, "git-failed")
+
+
 if __name__ == "__main__":
     unittest.main()

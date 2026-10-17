@@ -7,6 +7,7 @@ recomputes them.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 # Commit classification buckets (exhaustive; missing counts are 0, never absent)
@@ -107,3 +108,24 @@ class Report:
     ai_ratio: float
     gate: Optional[Dict] = None
     window: Optional[Dict] = None  # {"since": int|None, "until": int|None}; set when a window was applied
+
+
+def parse_window_value(value: str) -> int:
+    """Deterministic window-bound parsing: epoch seconds, YYYY-MM-DD
+    (UTC midnight) or ISO 8601 datetime. Naive datetimes are UTC. No
+    wall clock is involved — the bound is pure data.
+
+    Lives here (pure, no IO) so both the CLI and the web transport share
+    exactly one parser — the boundary semantics are defined in one place.
+    """
+    if value.isdigit():
+        return int(value)
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(
+            f"window-bound-invalid: cannot parse {value!r} (use epoch "
+            "seconds, YYYY-MM-DD or ISO 8601)") from None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())

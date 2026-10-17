@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ghostauthor"
-version = "0.2.0"
+version = "0.3.0"
 description = "Deterministic AI code provenance ledger: who signed the commits in your repo — auditable, reproducible, no LLM. Stdlib only."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -15,10 +15,12 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Environment :: Console",
+    "Environment :: Web Environment",
 ]
 
 [project.scripts]
 ghostauthor = "ghostauthor.cli:main"
+ghostauthor-web = "ghostauthor.web:main"
 
 [project.optional-dependencies]
 dev = []
@@ -27,4 +29,4 @@ dev = []
 include = ["ghostauthor*"]
 
 [tool.setuptools.package-data]
-ghostauthor = ["roster/*.json"]
+ghostauthor = ["roster/*.json", "web/*.html"]

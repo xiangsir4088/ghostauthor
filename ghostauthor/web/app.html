@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ghostauthor — deterministic AI code provenance ledger</title>
+<meta name="description" content="Read-only, deterministic audit of which agents signed which commits. Stdlib only, no LLM.">
+<style>
+:root{
+  --bg:#0a0c10; --panel:#12151c; --panel2:#0e1117;
+  --border:#222a37; --border-soft:#1a212c;
+  --text:#e6e9ef; --muted:#8b93a3; --dim:#5c6470;
+  --brand:#56d4c8;
+  --agent:#56d4c8; --cosigned:#f0a83c; --unsigned:#6b7280;
+  --ok:#5ad17a; --bad:#f0565c; --warn:#f0a83c; --info:#6aa6ff;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);
+  font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.mono{font-family:var(--mono)}
+.muted{color:var(--muted)}
+.dim{color:var(--dim)}
+a{color:var(--brand)}
+
+/* top bar */
+.topbar{display:flex;align-items:center;justify-content:space-between;
+  gap:16px;padding:14px 22px;border-bottom:1px solid var(--border);
+  background:linear-gradient(180deg,#0d1017,#0a0c10)}
+.brand{font-family:var(--mono);font-weight:700;font-size:18px;letter-spacing:.3px}
+.brand .glyph{color:var(--brand);margin-right:2px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{font-family:var(--mono);font-size:12px;color:var(--muted);
+  border:1px solid var(--border);border-radius:999px;padding:3px 10px;
+  background:var(--panel2)}
+.chip.ro{color:var(--brand);border-color:rgba(86,212,200,.35)}
+
+main{max-width:1180px;margin:0 auto;padding:24px 22px 40px}
+
+/* panels */
+.panel{background:var(--panel);border:1px solid var(--border);
+  border-radius:12px;padding:18px 18px 20px}
+.controls{margin-bottom:20px}
+
+/* entries */
+.entry{margin-bottom:14px}
+.entry-label{font-size:12px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.badge{font-family:var(--mono);font-size:12px;font-weight:700;color:#0a0c10;
+  background:var(--brand);border-radius:6px;padding:1px 8px}
+.badge.b{background:var(--cosigned)}
+.entry-row{display:grid;grid-template-columns:1fr 220px auto;gap:10px}
+.entry-row input{width:100%}
+input{background:var(--panel2);border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:9px 11px;font-size:14px;font-family:var(--sans)}
+input.mono{font-family:var(--mono);font-size:13px}
+input:focus{outline:none;border-color:var(--brand)}
+input::placeholder{color:var(--dim)}
+.chk{display:flex;align-items:center;gap:7px;color:var(--muted);
+  font-size:13px;white-space:nowrap;user-select:none}
+.chk input{width:auto;padding:0}
+
+button{font-family:var(--sans);cursor:pointer;border-radius:8px}
+.primary{background:var(--brand);color:#08110f;border:1px solid var(--brand);
+  font-weight:700;font-size:14px;padding:10px 18px}
+.primary:hover{filter:brightness(1.06)}
+.primary:disabled{opacity:.6;cursor:default}
+.ghost{background:transparent;color:var(--muted);border:1px dashed var(--border);
+  font-size:13px;padding:7px 12px;margin-top:2px}
+.ghost:hover{color:var(--brand);border-color:var(--brand)}
+
+.optgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px 14px;
+  margin-top:16px;padding-top:16px;border-top:1px solid var(--border-soft)}
+.optgrid label{display:flex;flex-direction:column;gap:6px;font-size:12px;
+  color:var(--muted)}
+.actions{display:flex;align-items:center;gap:16px;margin-top:18px}
+.actions .muted{font-size:12.5px}
+
+/* error banner */
+.banner{border-radius:10px;padding:12px 14px;margin-bottom:18px;font-size:14px}
+.banner.error{background:rgba(240,86,92,.1);border:1px solid rgba(240,86,92,.4);
+  color:#ff9ea3;font-family:var(--mono)}
+
+/* delta strip */
+.delta{display:flex;align-items:center;justify-content:center;gap:22px;
+  margin-bottom:18px;padding:12px;border:1px solid var(--border);
+  border-radius:12px;background:var(--panel2)}
+.dcell{display:flex;align-items:baseline;gap:8px}
+.dk{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.dv{font-family:var(--mono);font-size:22px;font-weight:700;color:var(--brand)}
+.ddelta{font-family:var(--mono);font-size:13px;color:var(--muted);
+  border-left:1px solid var(--border);border-right:1px solid var(--border);
+  padding:0 16px}
+
+/* reports grid */
+.reports{display:grid;grid-template-columns:1fr;gap:20px}
+@media(min-width:940px){.reports{grid-template-columns:1fr 1fr}}
+.report{background:var(--panel);border:1px solid var(--border);
+  border-radius:12px;padding:18px}
+.report-head{display:flex;align-items:center;justify-content:space-between;
+  gap:12px;margin-bottom:14px}
+.report-head .path{font-size:13px;color:var(--muted);word-break:break-all}
+.refchip{font-family:var(--mono);font-size:12px;color:var(--brand);
+  border:1px solid rgba(86,212,200,.35);border-radius:6px;padding:2px 8px;
+  white-space:nowrap}
+
+/* gate */
+.gate{font-family:var(--mono);font-size:13px;font-weight:700;
+  border-radius:8px;padding:10px 12px;margin-bottom:14px}
+.gate.pass{background:rgba(90,209,122,.1);border:1px solid rgba(90,209,122,.4);color:var(--ok)}
+.gate.breach{background:rgba(240,86,92,.12);border:1px solid rgba(240,86,92,.45);color:var(--bad)}
+
+/* summary cards */
+.cards{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:6px}
+.card{background:var(--panel2);border:1px solid var(--border-soft);
+  border-radius:10px;padding:12px 14px}
+.card .k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--muted)}
+.card .v{font-family:var(--mono);font-size:24px;font-weight:700;margin-top:4px}
+.card .s{font-size:12px;color:var(--dim);margin-top:2px}
+.card.big .v{font-size:30px}
+.card .v.accent{color:var(--brand)}
+
+.subhead{font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--dim);margin:18px 0 8px}
+
+/* bucket bar */
+.bar{display:flex;height:14px;border-radius:7px;overflow:hidden;
+  background:var(--panel2);border:1px solid var(--border-soft)}
+.seg{display:block;height:100%}
+.seg.agent{background:var(--agent)}
+.seg.cosigned{background:var(--cosigned)}
+.seg.unsigned{background:var(--unsigned)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:10px;font-size:12.5px;
+  color:var(--muted);font-family:var(--mono)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px}
+.dot.agent{background:var(--agent)}
+.dot.cosigned{background:var(--cosigned)}
+.dot.unsigned{background:var(--unsigned)}
+
+/* table */
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{text-align:left;font-weight:600;color:var(--dim);font-size:11px;
+  text-transform:uppercase;letter-spacing:.05em;padding:6px 8px;
+  border-bottom:1px solid var(--border)}
+.tbl td{padding:7px 8px;border-bottom:1px solid var(--border-soft)}
+.tbl tr:last-child td{border-bottom:none}
+.tbl .num{text-align:right;font-family:var(--mono)}
+.tbl th.num{text-align:right}
+.tbl tbody tr:hover{background:var(--panel2)}
+
+/* sessions */
+.sess{display:flex;align-items:center;gap:12px;padding:7px 0;
+  border-bottom:1px solid var(--border-soft);font-size:13px}
+.sess:last-child{border-bottom:none}
+.agent-chip{font-family:var(--mono);font-size:12px;color:var(--brand);
+  border:1px solid rgba(86,212,200,.35);border-radius:6px;padding:1px 8px}
+
+/* findings */
+.finding{padding:9px 11px;border:1px solid var(--border-soft);
+  border-radius:9px;margin-bottom:8px;background:var(--panel2)}
+.finding .sev{font-family:var(--mono);font-size:11px;font-weight:700;
+  text-transform:uppercase;border-radius:5px;padding:1px 7px;margin-right:8px}
+.finding.warn .sev{background:rgba(240,168,60,.15);color:var(--warn)}
+.finding.info .sev{background:rgba(106,166,255,.15);color:var(--info)}
+.finding .rule{font-size:13px;color:var(--text)}
+.finding .ev{font-size:12px;color:var(--muted);margin-top:5px;word-break:break-all}
+.finding .dt{font-size:12.5px;color:var(--dim);margin-top:3px}
+
+/* raw json */
+details.raw{margin-top:6px}
+details.raw summary{cursor:pointer;font-size:13px;color:var(--muted);
+  list-style:none;user-select:none}
+details.raw summary::-webkit-details-marker{display:none}
+details.raw summary::before{content:"▸ ";color:var(--brand)}
+details.raw[open] summary::before{content:"▾ "}
+.rawbar{display:flex;gap:8px;margin:10px 0 8px}
+.mini{background:var(--panel2);border:1px solid var(--border);color:var(--muted);
+  font-size:12px;padding:5px 10px}
+.mini:hover{color:var(--brand);border-color:var(--brand)}
+pre{background:#080a0e;border:1px solid var(--border-soft);border-radius:9px;
+  padding:12px;overflow:auto;max-height:420px;font-size:12px;line-height:1.45;
+  margin:0;color:#c9d1d9}
+
+/* per-entry error card */
+.error-card{border-color:rgba(240,86,92,.4)}
+.entry-err{padding:8px 0}
+.entry-err .ecode{font-family:var(--mono);font-size:13px;font-weight:700;
+  color:var(--bad)}
+.entry-err .edt{font-size:13px;color:var(--muted);margin-top:6px;word-break:break-word}
+
+/* empty state */
+.empty-state{padding:48px 8px 20px;text-align:center}
+.empty-state h1{font-family:var(--mono);font-size:30px;margin:0 0 14px}
+.empty-state .lead{max-width:640px;margin:0 auto 22px;color:var(--muted);
+  font-size:15.5px}
+.hints{list-style:none;padding:0;margin:0 auto;max-width:520px;text-align:left;
+  display:flex;flex-direction:column;gap:10px}
+.hints li{position:relative;padding-left:24px;color:var(--text);font-size:14px}
+.hints li::before{content:"✳";position:absolute;left:0;color:var(--brand)}
+
+footer{max-width:1180px;margin:0 auto;padding:18px 22px 34px;
+  border-top:1px solid var(--border-soft);display:flex;flex-direction:column;
+  gap:4px;font-size:12.5px}
+footer .muted{color:var(--dim)}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="glyph">✳</span> ghostauthor <span class="muted">— ledger</span></div>
+  <div class="chips">
+    <span class="chip" id="ver">v?</span>
+    <span class="chip ro">read-only</span>
+    <span class="chip">deterministic</span>
+    <span class="chip">no LLM</span>
+  </div>
+</header>
+
+<main>
+  <section class="panel controls">
+    <div class="entry" id="entryA">
+      <div class="entry-label"><span class="badge">A</span> Repository A</div>
+      <div class="entry-row">
+        <input id="pathA" class="mono" placeholder="path to a git repository (on this machine)" spellcheck="false" autocomplete="off">
+        <input id="refA" class="mono" placeholder="ref (optional — branch/tag/commit, default HEAD)" spellcheck="false" autocomplete="off">
+        <label class="chk"><input type="checkbox" id="allA"> all refs</label>
+      </div>
+    </div>
+    <div class="entry" id="entryB" hidden>
+      <div class="entry-label"><span class="badge b">B</span> Repository B — comparison</div>
+      <div class="entry-row">
+        <input id="pathB" class="mono" placeholder="path to a second git repository (or the same one, different ref)" spellcheck="false" autocomplete="off">
+        <input id="refB" class="mono" placeholder="ref (optional)" spellcheck="false" autocomplete="off">
+        <label class="chk"><input type="checkbox" id="allB"> all refs</label>
+      </div>
+    </div>
+    <button id="toggleB" class="ghost" type="button">+ Add comparison (repo B)</button>
+
+    <div class="optgrid">
+      <label>since (inclusive)
+        <input id="since" type="datetime-local">
+      </label>
+      <label>until (exclusive)
+        <input id="until" type="datetime-local">
+      </label>
+      <label>session gap (minutes)
+        <input id="gap" type="number" value="360" min="1">
+      </label>
+      <label>max AI ratio (gate)
+        <input id="ratio" type="number" step="0.05" min="0" max="1" placeholder="off">
+      </label>
+      <label>roster file
+        <input id="roster" class="mono" placeholder="optional roster JSON path">
+      </label>
+      <label>roster dir
+        <input id="rosterDir" class="mono" placeholder="optional directory of rosters">
+      </label>
+    </div>
+
+    <div class="actions">
+      <button id="run" class="primary" type="button">Run audit</button>
+      <span class="muted">read-only — runs <span class="mono">git log</span> only; nothing is written, nothing is executed</span>
+    </div>
+  </section>
+
+  <div id="error-banner" class="banner error" hidden><span id="error-text"></span></div>
+
+  <section id="results" hidden>
+    <div id="delta-strip" class="delta" hidden>
+      <div class="dcell"><span class="dk">A</span><span class="dv" id="delta-a"></span></div>
+      <div class="ddelta" id="delta-d"></div>
+      <div class="dcell"><span class="dk">B</span><span class="dv" id="delta-b"></span></div>
+    </div>
+    <div id="reports-grid" class="reports"></div>
+  </section>
+
+  <section id="empty-state">
+    <h1>who signed the commits?</h1>
+    <p class="lead">ghostauthor reads the <span class="mono">Co-Authored-By:</span>
+      trailers agents already leave in git history and answers — deterministically,
+      with no LLM — which agent signed which commits, how many lines, in which
+      sessions. Point it at a repository on this machine and run.</p>
+    <ul class="hints">
+      <li>Every count is traceable to its commit list — expand the raw JSON.</li>
+      <li>Same repo state ⇒ same report, byte for byte, exactly like the CLI.</li>
+      <li>Add a second repository (or the same one, a different ref) to compare.</li>
+    </ul>
+  </section>
+</main>
+
+<footer>
+  <span>ghostauthor — deterministic AI code provenance ledger</span>
+  <span class="muted">stdlib only · no LLM · read-only · unsigned ≠ human · missing ≡ empty</span>
+</footer>
+
+<script>
+(function(){
+"use strict";
+const $ = (s, el) => (el || document).querySelector(s);
+
+function esc(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function pct(n, total){ return total ? (n/total*100).toFixed(1)+'%' : '0.0%'; }
+function fmtPct(r){ return (r*100).toFixed(1)+'%'; }
+function fmtTs(ts){
+  if (ts === null || ts === undefined) return '—';
+  return new Date(ts*1000).toISOString().replace('T',' ').slice(0,16) + 'Z';
+}
+
+function buildPayload(){
+  const entries = [{
+    path: $('#pathA').value.trim(),
+    ref: $('#refA').value.trim() || null,
+    all_refs: $('#allA').checked
+  }];
+  if (!$('#entryB').hidden) {
+    entries.push({
+      path: $('#pathB').value.trim(),
+      ref: $('#refB').value.trim() || null,
+      all_refs: $('#allB').checked
+    });
+  }
+  return {
+    entries: entries,
+    since: $('#since').value || null,
+    until: $('#until').value || null,
+    session_gap_minutes: $('#gap').value !== '' ? Number($('#gap').value) : 360,
+    max_ai_ratio: $('#ratio').value !== '' ? Number($('#ratio').value) : null,
+    roster: $('#roster').value.trim() || null,
+    roster_dir: $('#rosterDir').value.trim() || null
+  };
+}
+
+function showError(err){
+  const b = $('#error-banner');
+  b.hidden = false;
+  $('#error-text').textContent = (err && err.code ? '['+err.code+'] ' : '')
+    + ((err && err.detail) || 'unknown error');
+}
+
+async function runAudit(){
+  $('#error-banner').hidden = true;
+  const btn = $('#run');
+  btn.disabled = true; btn.textContent = 'auditing…';
+  try {
+    const resp = await fetch('/api/audit', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(buildPayload())
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (data.error) { showError(data.error); return; }
+    if (data.results) { renderResults(data.results); return; }
+    showError({code:'bad-response', detail:'unexpected server response'});
+  } catch(e){
+    showError({code:'network', detail:String(e)});
+  } finally {
+    btn.disabled = false; btn.textContent = 'Run audit';
+  }
+}
+
+function renderResults(results){
+  const grid = $('#reports-grid');
+  grid.innerHTML = '';
+  const ok = results.filter(r => r.report);
+  const delta = $('#delta-strip');
+  if (results.length === 2 && ok.length === 2) {
+    const a = ok[0].report.ai_ratio, b = ok[1].report.ai_ratio;
+    const d = (a - b) * 100;
+    $('#delta-a').textContent = fmtPct(a);
+    $('#delta-b').textContent = fmtPct(b);
+    $('#delta-d').textContent = (d >= 0 ? 'A + ' : 'B + ') + Math.abs(d).toFixed(1) + 'pp';
+    delta.hidden = false;
+  } else {
+    delta.hidden = true;
+  }
+  results.forEach((r, i) => {
+    grid.appendChild(r.report ? renderReport(r, i) : renderEntryError(r, i));
+  });
+  $('#results').hidden = false;
+  $('#empty-state').hidden = true;
+}
+function renderReport(r){
+  const p = document.createElement('article');
+  p.className = 'report';
+  const rep = r.report;
+  const total = rep.total_commits;
+  const b = rep.commits_by_bucket || {};
+  const lb = rep.lines_by_bucket || {};
+  const linesTotal = (lb.agent||0) + (lb.cosigned||0) + (lb.unsigned||0);
+
+  let gate = '';
+  if (rep.gate) {
+    const br = rep.gate.breached;
+    gate = '<div class="gate ' + (br ? 'breach' : 'pass') + '">'
+      + (br ? 'BREACHED' : 'pass')
+      + ' — ai ratio ' + fmtPct(rep.gate.ratio) + ' vs limit ' + fmtPct(rep.gate.limit)
+      + '</div>';
+  }
+
+  const seg = (key, cls) => b[key]
+    ? '<span class="seg ' + cls + '" style="width:' + (b[key]/total*100).toFixed(2)
+      + '%" title="' + key + ': ' + b[key] + '"></span>'
+    : '';
+  const bar = total
+    ? '<div class="bar">' + seg('agent','agent') + seg('cosigned','cosigned')
+      + seg('unsigned','unsigned') + '</div>'
+    : '';
+
+  let agents = '<div class="muted" style="font-size:13px">no agents matched the roster</div>';
+  if (rep.agents && rep.agents.length) {
+    const rows = rep.agents.map(a =>
+      '<tr><td class="mono">' + esc(a.id) + '</td><td>' + esc(a.display_name) + '</td>'
+      + '<td class="num">' + a.commits + '</td><td class="num">+' + a.lines_added + '</td>'
+      + '<td class="num">-' + a.lines_removed + '</td><td class="num">' + a.sessions + '</td>'
+      + '<td class="num">' + a.longest_session_commits + '</td>'
+      + '<td class="mono dim">' + fmtTs(a.first_ts) + ' → ' + fmtTs(a.last_ts) + '</td></tr>'
+    ).join('');
+    agents = '<table class="tbl"><thead><tr><th>id</th><th>name</th>'
+      + '<th class="num">commits</th><th class="num">+added</th><th class="num">-removed</th>'
+      + '<th class="num">sessions</th><th class="num">longest</th><th>first → last</th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  let sess = '<div class="muted" style="font-size:13px">no agent sessions</div>';
+  if (rep.sessions && rep.sessions.length) {
+    sess = rep.sessions.map(s =>
+      '<div class="sess"><span class="agent-chip">' + esc(s.agent) + '</span>'
+      + '<span class="mono dim">' + fmtTs(s.start_ts) + ' → ' + fmtTs(s.end_ts) + '</span>'
+      + '<span class="muted">' + s.commit_shas.length + ' commit(s)</span></div>'
+    ).join('');
+  }
+
+  let finds = '<div class="muted" style="font-size:13px">no findings</div>';
+  if (rep.findings && rep.findings.length) {
+    finds = rep.findings.map(f =>
+      '<div class="finding ' + esc(f.severity) + '"><span class="sev">' + esc(f.severity)
+      + '</span><span class="rule mono">' + esc(f.rule) + '</span>'
+      + '<div class="ev mono">' + esc(f.evidence) + '</div>'
+      + '<div class="dt">' + esc(f.detail) + '</div></div>'
+    ).join('');
+  }
+
+  const rawJson = JSON.stringify(rep, null, 2);
+
+  p.innerHTML =
+    '<header class="report-head"><div class="path mono">' + esc(r.path) + '</div>'
+    + '<span class="refchip">ref: ' + esc(r.ref) + '</span></header>'
+    + gate
+    + '<div class="cards">'
+    + '<div class="card big"><div class="k">total commits</div><div class="v">' + total
+    + '</div><div class="s">' + esc(String(r.path).split(/[\\/]/).pop() || '') + '</div></div>'
+    + '<div class="card big"><div class="k">ai-signed</div><div class="v accent">'
+    + fmtPct(rep.ai_ratio) + '</div><div class="s">' + b.agent + ' of ' + total
+    + ' commits</div></div>'
+    + '<div class="card"><div class="k">cosigned-unknown</div><div class="v">'
+    + b.cosigned + '</div><div class="s">' + pct(b.cosigned, total) + '</div></div>'
+    + '<div class="card"><div class="k">unsigned</div><div class="v">'
+    + b.unsigned + '</div><div class="s">' + pct(b.unsigned, total) + '</div></div>'
+    + '</div>'
+    + '<div class="subhead">commits by bucket · lines touched ' + linesTotal + '</div>'
+    + bar
+    + '<div class="legend">'
+    + '<span><i class="dot agent"></i>agent ' + b.agent + ' (' + pct(b.agent, total) + ')</span>'
+    + '<span><i class="dot cosigned"></i>cosigned ' + b.cosigned + ' (' + pct(b.cosigned, total) + ')</span>'
+    + '<span><i class="dot unsigned"></i>unsigned ' + b.unsigned + ' (' + pct(b.unsigned, total) + ')</span>'
+    + '</div>'
+    + '<div class="subhead">agents</div>' + agents
+    + '<div class="subhead">sessions</div>' + sess
+    + '<div class="subhead">findings (' + ((rep.findings||[]).length) + ')</div>' + finds
+    + '<details class="raw"><summary>raw json <span class="muted">— byte-stable, identical to the CLI</span></summary>'
+    + '<div class="rawbar"><button class="mini" type="button" data-copy>copy</button>'
+    + '<button class="mini" type="button" data-dl>download .json</button></div>'
+    + '<pre class="mono">' + esc(rawJson) + '</pre></details>';
+
+  const dlName = 'ghostauthor-' + String(r.ref||'report').replace(/[^a-z0-9_-]+/gi,'_') + '.json';
+  p.querySelector('[data-copy]').addEventListener('click', function(){
+    if (navigator.clipboard) navigator.clipboard.writeText(rawJson);
+  });
+  p.querySelector('[data-dl]').addEventListener('click', function(){
+    const blob = new Blob([rawJson], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = dlName; a.click();
+    URL.revokeObjectURL(url);
+  });
+  return p;
+}
+
+function renderEntryError(r){
+  const p = document.createElement('article');
+  p.className = 'report error-card';
+  const e = r.error || {};
+  p.innerHTML =
+    '<header class="report-head"><div class="path mono">' + esc(r.path || '(no path)') + '</div>'
+    + '<span class="refchip">ref: ' + esc(r.ref) + '</span></header>'
+    + '<div class="entry-err"><div class="ecode">' + esc(e.code || 'error') + '</div>'
+    + '<div class="edt">' + esc(e.detail || '') + '</div></div>';
+  return p;
+}
+
+function init(){
+  $('#run').addEventListener('click', runAudit);
+  $('#toggleB').addEventListener('click', function(){
+    const show = $('#entryB').hidden;
+    $('#entryB').hidden = !show;
+    $('#toggleB').textContent = show ? '− Remove comparison' : '+ Add comparison (repo B)';
+  });
+  $('#roster').addEventListener('input', function(){
+    if ($('#roster').value) $('#rosterDir').value = '';
+  });
+  $('#rosterDir').addEventListener('input', function(){
+    if ($('#rosterDir').value) $('#roster').value = '';
+  });
+  fetch('/api/info').then(r => r.json()).then(d => {
+    $('#ver').textContent = 'v' + d.version;
+  }).catch(() => {});
+  const repo = new URLSearchParams(location.search).get('repo');
+  if (repo) { $('#pathA').value = repo; runAudit(); }
+  ['pathA','refA','pathB','refB'].forEach(id => {
+    $('#'+id).addEventListener('keydown', e => { if (e.key === 'Enter') runAudit(); });
+  });
+}
+document.addEventListener('DOMContentLoaded', init);
+})();
+</script>
+</body>
+</html>

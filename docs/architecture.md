@@ -18,15 +18,16 @@ be steered by wording will eventually be steered by wording.
 
 | File | Responsibility | Forbidden here |
 |---|---|---|
-| `models.py` | data model + bucket constants | any IO, any git call |
+| `models.py` | data model + bucket constants + shared window-bound parser | any IO, any git call |
 | `roster.py` | load + validate the declarative agent roster | silently "fixing" bad input |
-| `gitparse.py` | git log extraction, trailer-block parsing | any judgment, any matching |
+| `gitparse.py` | git log extraction (HEAD / all refs / one ref), trailer-block parsing | any judgment, any matching |
 | `engine.py` | normalize → match → sessions → aggregate | any rendering, any file IO |
-| `report.py` | render text / json / markdown | any recomputation |
+| `report.py` | render text / json / markdown / sarif | any recomputation |
 | `cli.py` | argparse + file IO + exit codes | any logic |
 | `mcp_server.py` | read-only stdio JSON-RPC | network, writes, execution |
+| `web.py` | read-only HTTP transport (stdlib `http.server`) + routing | any judgment, matching, recomputation |
 
-Data flows one way: `git → gitparse → engine → report → cli/mcp`.
+Data flows one way: `git → gitparse → engine → report → cli/mcp/web`.
 Nothing downstream recomputes what upstream decided.
 
 ## Invariants (the parts that keep the tool honest for years)
@@ -62,6 +63,24 @@ process execution beyond the read-only `git log` inside the repository it is
 pointed at. **It never auto-executes anything.** The moment a tool can act,
 the risk model changes from "advice" to "decision that must be supervised" —
 this tool refuses that change of category.
+
+## Web transport
+
+A local dashboard over the same pipeline. The zero-dependency invariant
+extends to it: `http.server` from the stdlib, one self-contained HTML page,
+no framework, no build step, no CDN. Like the MCP server, the web transport
+is pure wiring — it parses the request, runs the same
+`iter_commits → build_report → render_json`, and returns the result. No
+judgment, no matching, no recomputation, nothing executed beyond the
+read-only `git log` inside the repositories it is pointed at.
+
+The report it serves is **byte-identical to the CLI's `--format json`** for
+the same repo state (pinned by `tests/test_web.py` and by verify), so the
+reproducibility invariant holds on every transport. Error codes are the HTTP
+translation of the exit-code contract: request-level option errors are 400,
+a missing repository is 404, an empty repository is 422 — and a breached
+gate is still a 200, because a breach is a verdict, not a failure. It binds
+`127.0.0.1` by default: the audit tool runs on the machine it audits.
 
 ## What is deliberately NOT here
 

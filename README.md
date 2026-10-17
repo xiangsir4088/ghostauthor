@@ -38,6 +38,8 @@ ghostauthor /path/to/your/repo --format json --max-ai-ratio 0.5
 ghostauthor /path/to/your/repo --since 2026-07-01 --until 2026-10-01
 # audit a quarter, not a history (epoch, YYYY-MM-DD or ISO 8601; since is
 # inclusive, until is exclusive)
+ghostauthor /path/to/your/repo --ref feature-x
+# audit one branch/tag/commit instead of HEAD
 ghostauthor /path/to/your/repo --format sarif
 # SARIF 2.1.0 for compliance pipelines
 ```
@@ -100,6 +102,30 @@ $ echo $?
 It also ships a **read-only MCP server** (one tool, `repo_authorship_report`,
 stdio, zero dependencies) — see `ghostauthor/mcp_server.py`. It reports; it
 never executes. That is an invariant, not a promise.
+
+## Web UI
+
+The same ledger with a local dashboard: one self-contained HTML page served
+by a stdlib-only `http.server`. No framework, no build step, no CDN — the
+"runs on the machine it audits" invariant holds for the web version too, and
+the page only ever triggers the read-only `git log` in the repository you
+point it at. The JSON it shows and lets you download is **byte-identical to
+the CLI's** `--format json` for the same repo state: one source of truth,
+two skins.
+
+```bash
+ghostauthor-web                       # → http://127.0.0.1:8321
+ghostauthor-web --port 9000           # different port
+ghostauthor-web --host 0.0.0.0        # only if you really mean it
+```
+
+It binds `127.0.0.1` by default. Enter one or two repository paths — each
+optionally scoped to a ref (`main` vs a feature branch) — plus the same
+options the CLI has: time window, session gap, `--max-ai-ratio` gate, roster
+file or dir. Add a second entry to compare two codebases, or one codebase at
+two refs, side by side. Every count expands to its commit list; the raw
+byte-stable JSON is one click away. Like the CLI and the MCP server, the web
+transport is **read-only**: it reports, it never executes.
 
 ## Design trade-offs
 
@@ -208,13 +234,15 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - [x] v0.2 — `--since/--until` time windows (audit a quarter, not a history)
 - [x] v0.2 — SARIF 2.1.0 output for compliance pipelines
 - [x] v0.2 — multiple roster files / `--roster-dir`
-- [ ] v0.3 — branch comparison: this branch vs `main`
+- [x] v0.3 — `--ref`: audit one branch/tag/commit instead of HEAD
+- [x] v0.3 — web UI: local read-only dashboard, stdlib only, byte-stable JSON, side-by-side comparison
+- [ ] v0.3 — CLI two-branch diff (the web UI already compares two refs side by side)
 - [ ] v0.3 — per-author × per-agent cross-tabulation
 - [ ] v1.0 — write path (opt-in trailer signing), with the attestation boundary documented
 
 ## Tests
 
-52 tests pin **properties**, not coverage:
+74 tests pin **properties**, not coverage:
 
 - **Reproducibility** — same repo state ⇒ identical report, regardless of input order
 - **Trailer-block semantics** — negative cases: signature in the body, signature followed by prose, CRLF messages, missing email, lowercase keys, continuation lines
@@ -226,11 +254,13 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - **Roster-dir merge** — sorted filename order, cross-file duplicate ids rejected by rule id
 - **SARIF mapping** — byte-stable; findings → results with rule descriptors; a breached gate is an `error`-level result
 - **Framing contract** — the git-output parser is pinned against crafted streams, including rejection of unframed output
+- **Ref scoping** — a ref limits the scan to that branch/tag/commit; combining it with `--all` is rejected (`ref-conflict`); a missing path is `not-a-repo`, never a server failure
+- **Web parity** — the web transport serves byte-identical JSON to the CLI; request-level errors (bad window/gate/roster) are 400, per-entry errors (not-a-repo 404, no-commits 422) carry their documented codes
 
 One click runs the whole matrix (roster → unit suite → 3 deterministic
 fixture repos → CLI exit codes → real MCP `initialize`/`tools/list`/
-`tools/call` → rendering → time window → roster-dir merge → SARIF), and
-prints anything it skips and why:
+`tools/call` → rendering → time window → roster-dir merge → SARIF → live
+web server, byte-stable vs the CLI), and prints anything it skips and why:
 
 ```bash
 python verify.py

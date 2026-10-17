@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from .models import CommitInfo, Trailer
 
@@ -65,6 +65,12 @@ def _run_git(args: List[str]) -> str:
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout).strip()
         if "not a git repository" in err:
+            raise GitError("not-a-repo", err)
+        # A path that does not exist (or is not accessible) reports
+        # "cannot change to ...". For the auditor that is the same
+        # real-world state as "no repo here" — classified not-a-repo (404),
+        # never a server-side git failure.
+        if "cannot change to" in err:
             raise GitError("not-a-repo", err)
         # Both phrasings mean the same real-world state: a repo with an
         # unborn HEAD (common in the vibe-coding era: everything staged,
@@ -186,15 +192,25 @@ def _parse_log(out: str) -> List[CommitInfo]:
     return commits
 
 
-def iter_commits(repo_path: str, all_refs: bool = False) -> List[CommitInfo]:
+def iter_commits(repo_path: str, all_refs: bool = False,
+                 ref: Optional[str] = None) -> List[CommitInfo]:
     """Extract every commit of the repository, oldest data last.
 
-    Returns commits in git log order (newest first); the engine sorts
+    `ref` scopes the scan to one ref (branch / tag / commit-ish) instead of
+    HEAD; it is mutually exclusive with `all_refs` (ref-conflict). Returns
+    commits in git log order (newest first); the engine sorts
     deterministically by (authored_at, sha).
     """
+    if all_refs and ref:
+        raise ValueError("ref-conflict: use all_refs or ref, not both")
+    if ref is not None and ref.startswith("-"):
+        # Git ref names cannot start with '-'. Rejecting (never silently
+        # "fixing") keeps the refspec unambiguous — it can never be misread
+        # as a git option, which matters on the network-facing web transport.
+        raise ValueError("ref-invalid: a ref cannot start with '-'")
+    refspec = "--all" if all_refs else (ref or "HEAD")
     args = ["-C", str(repo_path), "log", "--numstat",
-            "--format=" + _LOG_FORMAT, "--no-show-signature"]
-    args.append("--all" if all_refs else "HEAD")
+            "--format=" + _LOG_FORMAT, "--no-show-signature", refspec]
     out = _run_git(args)
     commits = _parse_log(out)
     if not commits:
