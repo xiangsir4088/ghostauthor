@@ -40,6 +40,8 @@ ghostauthor /path/to/your/repo --since 2026-07-01 --until 2026-10-01
 # inclusive, until is exclusive)
 ghostauthor /path/to/your/repo --ref feature-x
 # audit one branch/tag/commit instead of HEAD
+ghostauthor /path/to/your/repo --base main --ref feature-x
+# two-branch diff: only what feature-x adds over main (git range main..feature-x)
 ghostauthor /path/to/your/repo --format sarif
 # SARIF 2.1.0 for compliance pipelines
 ```
@@ -72,6 +74,10 @@ agents:
   ID         NAME                      COMMITS   +ADDED  -REMOVED  SESSIONS  LONGEST
   claude     Claude (Anthropic)              4        4         2         1        4
   codex      Codex (OpenAI)                  3        3         2         1        3
+
+authors x agents:
+  AUTHOR                         claude     codex  cosigned  unsigned   TOTAL
+  Sam Human <sam@example.com>         4         3         1         5      12
 
 findings (3):
   [warn] cosigned-unknown  9f4f9cc34f31: Co-Authored-By: VibeBot <vibe@example.com>
@@ -236,13 +242,13 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - [x] v0.2 — multiple roster files / `--roster-dir`
 - [x] v0.3 — `--ref`: audit one branch/tag/commit instead of HEAD
 - [x] v0.3 — web UI: local read-only dashboard, stdlib only, byte-stable JSON, side-by-side comparison
-- [ ] v0.3 — CLI two-branch diff (the web UI already compares two refs side by side)
-- [ ] v0.3 — per-author × per-agent cross-tabulation
+- [x] v0.3.1 — `--base`: CLI two-branch diff (git range `base..target`; the web UI compares two refs side by side)
+- [x] v0.3.1 — per-author × per-agent cross-tabulation (every cell traceable to a commit list)
 - [ ] v1.0 — write path (opt-in trailer signing), with the attestation boundary documented
 
 ## Tests
 
-74 tests pin **properties**, not coverage:
+86 tests pin **properties**, not coverage:
 
 - **Reproducibility** — same repo state ⇒ identical report, regardless of input order
 - **Trailer-block semantics** — negative cases: signature in the body, signature followed by prose, CRLF messages, missing email, lowercase keys, continuation lines
@@ -255,12 +261,15 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - **SARIF mapping** — byte-stable; findings → results with rule descriptors; a breached gate is an `error`-level result
 - **Framing contract** — the git-output parser is pinned against crafted streams, including rejection of unframed output
 - **Ref scoping** — a ref limits the scan to that branch/tag/commit; combining it with `--all` is rejected (`ref-conflict`); a missing path is `not-a-repo`, never a server failure
+- **Two-branch diff** — `--base` scans git's `base..target` range; an empty range is `no-commits` (never a silent report); `--base` + `--all` is `ref-conflict`; a `-`-leading base is `ref-invalid`
+- **Cross-tab** — per-author rows, per-agent columns: multi-agent commits land in every matched column (the cap invariant), row totals are deduplicated, every cell expands to a commit list
 - **Web parity** — the web transport serves byte-identical JSON to the CLI; request-level errors (bad window/gate/roster) are 400, per-entry errors (not-a-repo 404, no-commits 422) carry their documented codes
 
 One click runs the whole matrix (roster → unit suite → 3 deterministic
 fixture repos → CLI exit codes → real MCP `initialize`/`tools/list`/
 `tools/call` → rendering → time window → roster-dir merge → SARIF → live
-web server, byte-stable vs the CLI), and prints anything it skips and why:
+web server, byte-stable vs the CLI → two-branch diff + cross-tab), and
+prints anything it skips and why:
 
 ```bash
 python verify.py

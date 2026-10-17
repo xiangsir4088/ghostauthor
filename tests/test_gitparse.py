@@ -207,6 +207,58 @@ class RefExtractionTests(unittest.TestCase):
                 iter_commits(str(repo), ref="no-such-branch")
             self.assertEqual(ctx.exception.code, "git-failed")
 
+    # ---- two-branch diff (base..target) ----
+
+    def test_base_scopes_to_diff(self):
+        import tempfile
+        from ghostauthor.gitparse import iter_commits
+        with tempfile.TemporaryDirectory() as td:
+            repo = self._build(td)
+            # main..side: exactly the one commit side adds over main.
+            diff = iter_commits(str(repo), base="main", ref="side")
+            self.assertEqual(len(diff), 1)
+            self.assertEqual(diff[0].message, "side change")
+            # every commit in the diff is NOT in the base
+            base = {c.sha for c in iter_commits(str(repo), ref="main")}
+            self.assertFalse({c.sha for c in diff} & base)
+
+    def test_base_empty_diff_is_no_commits(self):
+        import tempfile
+        from ghostauthor.gitparse import GitError, iter_commits
+        with tempfile.TemporaryDirectory() as td:
+            repo = self._build(td)
+            # main..main is empty: a contract error, never a silent report.
+            with self.assertRaises(GitError) as ctx:
+                iter_commits(str(repo), base="main")  # target = HEAD = main
+            self.assertEqual(ctx.exception.code, "no-commits")
+
+    def test_base_with_all_refs_rejected(self):
+        import tempfile
+        from ghostauthor.gitparse import iter_commits
+        with tempfile.TemporaryDirectory() as td:
+            repo = self._build(td)
+            with self.assertRaises(ValueError) as ctx:
+                iter_commits(str(repo), all_refs=True, base="main")
+            self.assertIn("ref-conflict", str(ctx.exception))
+
+    def test_base_starting_with_dash_is_rejected(self):
+        import tempfile
+        from ghostauthor.gitparse import iter_commits
+        with tempfile.TemporaryDirectory() as td:
+            repo = self._build(td)
+            with self.assertRaises(ValueError) as ctx:
+                iter_commits(str(repo), base="-e")
+            self.assertIn("ref-invalid", str(ctx.exception))
+
+    def test_unknown_base_is_git_failed(self):
+        import tempfile
+        from ghostauthor.gitparse import GitError, iter_commits
+        with tempfile.TemporaryDirectory() as td:
+            repo = self._build(td)
+            with self.assertRaises(GitError) as ctx:
+                iter_commits(str(repo), base="no-such-branch")
+            self.assertEqual(ctx.exception.code, "git-failed")
+
 
 if __name__ == "__main__":
     unittest.main()

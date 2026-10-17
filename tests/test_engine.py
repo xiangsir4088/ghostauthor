@@ -24,12 +24,13 @@ ROSTER = validate_roster({
 })
 
 
-def mk(sha, ts, trailers=(), added=0, removed=0, message=None):
+def mk(sha, ts, trailers=(), added=0, removed=0, message=None,
+       author=("h", "h@x.io")):
     msg = message or f"commit {sha}"
     if trailers:
         msg += "\n\n" + "\n".join(trailers)
-    return CommitInfo(sha=sha, parent_shas=["0" * 40], author_name="h",
-                      author_email="h@x.io", authored_at=ts, message=msg,
+    return CommitInfo(sha=sha, parent_shas=["0" * 40], author_name=author[0],
+                      author_email=author[1], authored_at=ts, message=msg,
                       trailers=parse_trailer_block(msg),
                       lines_added=added, lines_removed=removed)
 
@@ -137,6 +138,65 @@ class EngineInvariantTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             build_report([mk("a", 100)], ROSTER, since=300, until=200)
         self.assertIn("window-invalid", str(ctx.exception))
+
+
+class CrossTabTests(unittest.TestCase):
+    """per-author x per-agent cross-tab: rows, columns, cap, traceability."""
+
+    def test_rows_and_cells(self):
+        commits = [
+            mk("a", 100, ["Co-Authored-By: Claude <n@anthropic.com>"],
+               author=("Ana", "ana@x.io")),
+            mk("b", 200, [], author=("Ana", "ana@x.io")),
+            mk("c", 300, ["Co-Authored-By: Codex <x@openai.com>"],
+               author=("Bob", "bob@x.io")),
+            mk("d", 400, ["Co-Authored-By: Bot <bot@nowhere.io>"],
+               author=("Bob", "bob@x.io")),
+        ]
+        r = build_report(commits, ROSTER)
+        rows = {(a.name, a.email): a for a in r.authors}
+        self.assertEqual(rows[("Ana", "ana@x.io")].commits, 2)
+        self.assertEqual(rows[("Ana", "ana@x.io")].by_agent,
+                         {"claude": 1, "unsigned": 1})
+        self.assertEqual(rows[("Bob", "bob@x.io")].by_agent,
+                         {"codex": 1, "cosigned": 1})
+        # cell counts never exceed the row total
+        for a in r.authors:
+            self.assertTrue(all(n <= a.commits for n in a.by_agent.values()))
+
+    def test_multi_agent_lands_in_every_column(self):
+        # cap invariant: one commit, two columns, deduplicated row total 1.
+        c = mk("a", 100,
+               ["Co-Authored-By: Claude <n@anthropic.com>",
+                "Co-Authored-By: Codex <x@openai.com>"])
+        r = build_report([c], ROSTER)
+        row = r.authors[0]
+        self.assertEqual(row.commits, 1)
+        self.assertEqual(row.by_agent, {"claude": 1, "codex": 1})
+        self.assertEqual(sum(row.by_agent.values()), 2)
+
+    def test_rows_sorted_by_name_email(self):
+        commits = [mk("a", 100, author=("Zed", "z@x.io")),
+                   mk("b", 200, author=("Amy", "a@x.io")),
+                   mk("c", 300, author=("Zed", "z@x.io"))]
+        r = build_report(commits, ROSTER)
+        self.assertEqual([(a.name, a.email) for a in r.authors],
+                         [("Amy", "a@x.io"), ("Zed", "z@x.io")])
+
+    def test_cell_shas_traceable_and_ordered(self):
+        commits = [
+            mk("b", 200, ["Co-Authored-By: Claude <n@anthropic.com>"]),
+            mk("a", 100, ["Co-Authored-By: Claude <n@anthropic.com>"]),
+        ]
+        r = build_report(commits, ROSTER)
+        shas = r.authors[0].by_agent_shas["claude"]
+        self.assertEqual(len(shas), r.authors[0].by_agent["claude"])
+        # (authored_at, sha) order, not input order
+        self.assertEqual([s[:1] for s in shas], ["a", "b"])
+        # every cell list matches its count
+        for a in r.authors:
+            for col, n in a.by_agent.items():
+                self.assertEqual(len(a.by_agent_shas[col]), n)
 
 
 if __name__ == "__main__":

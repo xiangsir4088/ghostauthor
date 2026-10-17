@@ -40,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     ref_group.add_argument("--ref", metavar="REF",
                            help="scan one ref (branch/tag/commit) instead "
                                 "of HEAD")
+    p.add_argument("--base", metavar="REF",
+                   help="two-branch diff: scan only the commits reachable "
+                        "from the target (HEAD or --ref) but not from REF "
+                        "(git range REF..target); mutually exclusive with "
+                        "--all")
     p.add_argument("--format", choices=["text", "json", "markdown", "sarif"],
                    default="text", dest="fmt")
     p.add_argument("--out", help="write the report to FILE instead of stdout")
@@ -74,6 +79,11 @@ def main(argv: Optional[List[str]] = None) -> int:
               "not both", file=sys.stderr)
         return 2
 
+    if args.all and args.base is not None:
+        print("error: ref-conflict: --base needs a single target (HEAD or "
+              "--ref), not --all", file=sys.stderr)
+        return 2
+
     try:
         if args.roster_dir is not None:
             roster = load_roster_dir(args.roster_dir)
@@ -91,7 +101,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     try:
-        commits = iter_commits(args.path, all_refs=args.all, ref=args.ref)
+        commits = iter_commits(args.path, all_refs=args.all, ref=args.ref,
+                               base=args.base)
     except (GitError, ValueError) as exc:
         # GitError = repository problem; ValueError = a bad ref (ref-conflict
         # / ref-invalid, reachable via the equals form --ref=-foo). Both are
@@ -103,7 +114,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         report = build_report(
             commits, roster,
             repo_path=str(Path(args.path).resolve()),
-            ref="all" if args.all else (args.ref or "HEAD"),
+            ref=(f"{args.base}..{args.ref or 'HEAD'}" if args.base is not None
+                 else ("all" if args.all else (args.ref or "HEAD"))),
             session_gap_minutes=args.session_gap,
             max_ai_ratio=args.max_ai_ratio,
             since=since,

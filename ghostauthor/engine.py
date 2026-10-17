@@ -9,11 +9,11 @@ Report — that is the reproducibility invariant, and it is tested.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .models import (ALL_BUCKETS, BUCKET_AGENT, BUCKET_COSIGNED,
-                     BUCKET_UNSIGNED, AgentStats, CommitInfo, Finding,
-                     Report, Session)
+                     BUCKET_UNSIGNED, AgentStats, AuthorStats, CommitInfo,
+                     Finding, Report, Session)
 from .roster import Roster
 
 DEFAULT_SESSION_GAP_MINUTES = 360
@@ -54,6 +54,11 @@ def build_report(commits: List[CommitInfo],
     bucket_lines: Dict[str, int] = {b: 0 for b in ALL_BUCKETS}
     bucket_shas: Dict[str, List[str]] = {b: [] for b in ALL_BUCKETS}
     agent_commits: Dict[str, List[CommitInfo]] = {}
+    # author x agent cross-tab: (name, email) -> row accumulator. `cats`
+    # is the commit's attribution column set (matched agent ids, or the
+    # single cosigned/unsigned bucket key), so a multi-agent commit lands
+    # in every column — the same cap invariant as AgentStats.
+    author_agg: Dict[Tuple[str, str], Dict] = {}
     findings: List[Finding] = []
     cosigned_evidence: List[str] = []
 
@@ -103,6 +108,17 @@ def build_report(commits: List[CommitInfo],
         for agent_id in matched_ids:
             agent_commits.setdefault(agent_id, []).append(c)
 
+        # Cross-tab row: one cell per attribution column, deduplicated total.
+        row = author_agg.setdefault(
+            (c.author_name, c.author_email),
+            {"commits": 0, "by_agent": {}, "shas": {}})
+        row["commits"] += 1
+        cats = matched_ids if matched_ids else (
+            [BUCKET_COSIGNED] if c.trailers else [BUCKET_UNSIGNED])
+        for cat in cats:
+            row["by_agent"][cat] = row["by_agent"].get(cat, 0) + 1
+            row["shas"].setdefault(cat, []).append(c.sha)
+
     # Sessions + per-agent stats, in roster order (deterministic output order).
     gap = session_gap_minutes * 60
     sessions: List[Session] = []
@@ -139,6 +155,14 @@ def build_report(commits: List[CommitInfo],
             last_ts=cs[-1].authored_at,
         ))
 
+    # Rows in (name, email) order; cells already in (authored_at, sha)
+    # order because the loop runs over `ordered`.
+    authors = [
+        AuthorStats(name=name, email=email, commits=row["commits"],
+                    by_agent=row["by_agent"], by_agent_shas=row["shas"])
+        for (name, email), row in sorted(author_agg.items())
+    ]
+
     agent_count = bucket_commits[BUCKET_AGENT]
     ratio = agent_count / total
     gate: Optional[Dict] = None
@@ -156,6 +180,7 @@ def build_report(commits: List[CommitInfo],
         lines_by_bucket=bucket_lines,
         bucket_commit_shas=bucket_shas,
         agents=stats,
+        authors=authors,
         cosigned_evidence=cosigned_evidence,
         sessions=sessions,
         findings=findings,

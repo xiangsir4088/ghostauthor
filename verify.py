@@ -319,10 +319,84 @@ def main() -> int:
 
         step("web: HTTP server, JSON byte-identical to the CLI, error codes",
              web_ok)
+
+        # 15. two-branch diff (--base) + author x agent cross-tab
+        def diff_xtab_ok():
+            import os
+            import subprocess
+            diffrepo = Path(tmp) / "diffrepo"
+            diffrepo.mkdir()
+            subprocess.run(["git", "init", "-q", "-b", "main", str(diffrepo)],
+                           check=True, capture_output=True)
+
+            def dcommit(ts, msg, content, who=("Sam", "sam@example.com")):
+                (diffrepo / "f.txt").write_text(content, encoding="utf-8")
+                e = dict(os.environ)
+                e.update({"GIT_AUTHOR_NAME": who[0],
+                          "GIT_AUTHOR_EMAIL": who[1],
+                          "GIT_COMMITTER_NAME": who[0],
+                          "GIT_COMMITTER_EMAIL": who[1],
+                          "GIT_AUTHOR_DATE": f"{ts} +0000",
+                          "GIT_COMMITTER_DATE": f"{ts} +0000"})
+                subprocess.run(["git", "-C", str(diffrepo), "add", "-A"],
+                               check=True, env=e, capture_output=True)
+                subprocess.run(["git", "-C", str(diffrepo), "commit", "-q",
+                                "-m", msg], check=True, env=e,
+                               capture_output=True)
+
+            dcommit(1767225600, "one", "1\n")
+            dcommit(1767229200,
+                    "two\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+                    "2\n")
+            subprocess.run(["git", "-C", str(diffrepo), "checkout", "-q",
+                            "-b", "side"], check=True, capture_output=True)
+            dcommit(1767232800,
+                    "side\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+                    "3\n", who=("Ana", "ana@example.com"))
+            subprocess.run(["git", "-C", str(diffrepo), "checkout", "-q",
+                            "main"], check=True, capture_output=True)
+
+            proc = run_cli(diffrepo, "--format", "json", "--base", "main",
+                           "--ref", "side")
+            check("diff_rc", proc.returncode == 0,
+                  f"rc={proc.returncode} stderr={proc.stderr}")
+            data = json.loads(proc.stdout)
+            check("diff_ref_label", data["ref"] == "main..side",
+                  f"ref={data['ref']}")
+            check("diff_total", data["total_commits"] == 1,
+                  f"total={data['total_commits']}")
+            check("diff_buckets",
+                  data["commits_by_bucket"] == {"agent": 1, "cosigned": 0,
+                                                "unsigned": 0})
+            check("diff_xtab",
+                  data["authors"][0]["by_agent"] == {"claude": 1}
+                  and data["authors"][0]["email"] == "ana@example.com")
+            # negative: --base is mutually exclusive with --all
+            p2 = run_cli(diffrepo, "--all", "--base", "main")
+            check("diff_all_conflict", p2.returncode == 2,
+                  f"rc={p2.returncode}")
+            # negative: an empty range is no-commits, never a silent report
+            p3 = run_cli(diffrepo, "--base", "main", "--ref", "main")
+            check("diff_empty_range", p3.returncode == 2
+                  and "no-commits" in p3.stderr,
+                  f"rc={p3.returncode} stderr={p3.stderr}")
+
+            # cross-tab on the mixed fixture (single author, all columns)
+            pm = run_cli(mixed, "--format", "json")
+            am = json.loads(pm.stdout)["authors"]
+            check("xtab_cells", len(am) == 1
+                  and am[0]["by_agent"] == {"claude": 4, "codex": 3,
+                                            "cosigned": 1, "unsigned": 5},
+                  f"authors={am}")
+            pt = run_cli(mixed)
+            check("xtab_text", "authors x agents:" in pt.stdout)
+
+        step("CLI two-branch diff (--base) + author x agent cross-tab",
+             diff_xtab_ok)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    # 14. housekeeping: no stray build artifacts in the source tree
+    # 16. housekeeping: no stray build artifacts in the source tree
     def clean_ok():
         for stray in (ROOT / "build", ROOT / "dist", ROOT / "ghostauthor.egg-info"):
             check(f"clean_{stray.name}", not stray.exists())

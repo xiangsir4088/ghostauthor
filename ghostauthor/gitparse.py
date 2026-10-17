@@ -193,22 +193,33 @@ def _parse_log(out: str) -> List[CommitInfo]:
 
 
 def iter_commits(repo_path: str, all_refs: bool = False,
-                 ref: Optional[str] = None) -> List[CommitInfo]:
+                 ref: Optional[str] = None,
+                 base: Optional[str] = None) -> List[CommitInfo]:
     """Extract every commit of the repository, oldest data last.
 
     `ref` scopes the scan to one ref (branch / tag / commit-ish) instead of
-    HEAD; it is mutually exclusive with `all_refs` (ref-conflict). Returns
-    commits in git log order (newest first); the engine sorts
-    deterministically by (authored_at, sha).
+    HEAD; it is mutually exclusive with `all_refs` (ref-conflict). `base`
+    further scopes the scan to git's `base..(ref|HEAD)` range — the commits
+    reachable from the target but not from `base`, i.e. the two-branch diff.
+    It is mutually exclusive with `all_refs` too. Returns commits in git log
+    order (newest first); the engine sorts deterministically by
+    (authored_at, sha). An empty range (e.g. `main..main`) is no-commits,
+    never a silent empty report.
     """
     if all_refs and ref:
         raise ValueError("ref-conflict: use all_refs or ref, not both")
-    if ref is not None and ref.startswith("-"):
-        # Git ref names cannot start with '-'. Rejecting (never silently
-        # "fixing") keeps the refspec unambiguous — it can never be misread
-        # as a git option, which matters on the network-facing web transport.
-        raise ValueError("ref-invalid: a ref cannot start with '-'")
-    refspec = "--all" if all_refs else (ref or "HEAD")
+    if all_refs and base:
+        raise ValueError("ref-conflict: use all_refs or base, not both")
+    for name, value in (("ref", ref), ("base", base)):
+        if value is not None and value.startswith("-"):
+            # Git ref names cannot start with '-'. Rejecting (never silently
+            # "fixing") keeps the refspec unambiguous — it can never be misread
+            # as a git option, which matters on the network-facing web transport.
+            raise ValueError(f"ref-invalid: {name} cannot start with '-'")
+    if base is not None:
+        refspec = f"{base}..{ref or 'HEAD'}"
+    else:
+        refspec = "--all" if all_refs else (ref or "HEAD")
     args = ["-C", str(repo_path), "log", "--numstat",
             "--format=" + _LOG_FORMAT, "--no-show-signature", refspec]
     out = _run_git(args)

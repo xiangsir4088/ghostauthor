@@ -77,6 +77,24 @@ class Session:
 
 
 @dataclass
+class AuthorStats:
+    """One row of the per-author x per-agent cross-tabulation.
+
+    `by_agent` maps an attribution column — a roster agent id, or the
+    bucket keys "cosigned" / "unsigned" — to a commit count; non-zero
+    entries only. A multi-agent commit counts in EVERY matched column
+    (the same cap invariant as AgentStats); `commits` is the deduplicated
+    row total. `by_agent_shas` keeps the traceability invariant: every
+    cell count expands to a commit list, in (authored_at, sha) order.
+    """
+    name: str
+    email: str
+    commits: int
+    by_agent: Dict[str, int]
+    by_agent_shas: Dict[str, List[str]]
+
+
+@dataclass
 class Finding:
     """One traceable judgment: rule id + evidence (sha + original line).
 
@@ -102,10 +120,11 @@ class Report:
     lines_by_bucket: Dict[str, int]
     bucket_commit_shas: Dict[str, List[str]]  # traceability: every count -> commit list
     agents: List[AgentStats]
-    cosigned_evidence: List[str]
-    sessions: List[Session]
-    findings: List[Finding]
-    ai_ratio: float
+    authors: List[AuthorStats] = field(default_factory=list)
+    cosigned_evidence: List[str] = field(default_factory=list)
+    sessions: List[Session] = field(default_factory=list)
+    findings: List[Finding] = field(default_factory=list)
+    ai_ratio: float = 0.0
     gate: Optional[Dict] = None
     window: Optional[Dict] = None  # {"since": int|None, "until": int|None}; set when a window was applied
 

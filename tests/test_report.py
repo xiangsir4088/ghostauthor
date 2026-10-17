@@ -49,6 +49,23 @@ class ReportRenderingTests(unittest.TestCase):
         self.assertIn("agent", m)
         self.assertIn("| agent |", m)
 
+    def test_json_authors_traceable(self):
+        data = json.loads(render_json(make_report()))
+        self.assertEqual(len(data["authors"]), 1)
+        row = data["authors"][0]
+        self.assertEqual(row["name"], "h")
+        self.assertEqual(row["commits"], 1)
+        self.assertEqual(row["by_agent"], {"claude": 1})
+        # traceability: the cell count expands to a commit list
+        self.assertEqual(row["by_agent_shas"]["claude"], ["a" * 40])
+
+    def test_text_and_markdown_render_cross_tab(self):
+        t = render_text(make_report())
+        m = render_markdown(make_report())
+        self.assertIn("authors x agents:", t)
+        self.assertIn("| author |", m)
+        self.assertIn("| h <h@x.io> |", m)
+
     # ---- SARIF: schema shape + finding/gate mapping pinned ----
 
     @staticmethod

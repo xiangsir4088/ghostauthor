@@ -37,6 +37,16 @@ def render_json(report: Report) -> str:
             }
             for a in report.agents
         ],
+        "authors": [
+            {
+                "by_agent": a.by_agent,
+                "by_agent_shas": a.by_agent_shas,
+                "commits": a.commits,
+                "email": a.email,
+                "name": a.name,
+            }
+            for a in report.authors
+        ],
         "sessions": [
             {"agent": s.agent_id, "commit_shas": s.commit_shas,
              "end_ts": s.end_ts, "start_ts": s.start_ts}
@@ -150,6 +160,25 @@ def _agent_table(report: Report) -> List[str]:
     return lines
 
 
+def _author_table(report: Report) -> List[str]:
+    lines = ["authors x agents:"]
+    if not report.authors:
+        lines.append("  (none)")
+        return lines
+    # Columns: agents present (roster order, same as the agents table),
+    # then the two non-agent attribution buckets.
+    cols = [a.agent_id for a in report.agents] + ["cosigned", "unsigned"]
+    cw = max(10, max(len(c) for c in cols) + 2)
+    labels = [f"{a.name} <{a.email}>" for a in report.authors]
+    aw = max(len("AUTHOR"), max(len(l) for l in labels))
+    lines.append(f"  {'AUTHOR':<{aw}}" + "".join(f"{c:>{cw}}" for c in cols)
+                 + f"{'TOTAL':>8}")
+    for a, label in zip(report.authors, labels):
+        cells = "".join(f"{a.by_agent.get(c, 0):>{cw}}" for c in cols)
+        lines.append(f"  {label:<{aw}}" + cells + f"{a.commits:>8}")
+    return lines
+
+
 def render_text(report: Report) -> str:
     out: List[str] = []
     out.append("ghostauthor — deterministic AI code provenance ledger")
@@ -169,6 +198,7 @@ def render_text(report: Report) -> str:
                                  for b in ("agent", "cosigned", "unsigned")))
     out.append("")
     out.extend(_agent_table(report))
+    out.extend(_author_table(report))
     if report.gate is not None:
         g = report.gate
         verdict = "BREACHED" if g["breached"] else "pass"
@@ -207,6 +237,17 @@ def render_markdown(report: Report) -> str:
             out.append(f"| {a.display_name} | {a.commits} | {a.lines_added} "
                        f"| {a.lines_removed} | {a.session_count} "
                        f"| {a.longest_session_commits} |")
+        out.append("")
+    if report.authors:
+        # agent_id, not display_name: by_agent is keyed by id (the text
+        # table and the JSON agree).
+        cols = [a.agent_id for a in report.agents] + ["cosigned", "unsigned"]
+        out.append("| author | " + " | ".join(cols) + " | total |")
+        out.append("|---|" + "---:|" * (len(cols) + 1))
+        for a in report.authors:
+            label = f"{a.name} <{a.email}>"
+            cells = " | ".join(str(a.by_agent.get(c, 0)) for c in cols)
+            out.append(f"| {label} | {cells} | {a.commits} |")
         out.append("")
     if report.gate is not None:
         g = report.gate
