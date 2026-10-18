@@ -72,11 +72,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    # Reports carry raw commit messages (ensure_ascii=False JSON). When
-    # stdout is redirected, Python encodes with the platform locale (GBK on
-    # Chinese Windows) and non-ASCII text mangles or raises; force UTF-8.
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    # Reports carry raw commit messages (ensure_ascii=False JSON) and
+    # errors may carry repo output. When stdout/stderr are redirected,
+    # Python encodes with the platform locale (GBK on Chinese Windows)
+    # and non-ASCII text mangles or raises; force UTF-8 on both.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     args = build_parser().parse_args(argv)
 
     if args.roster is not None and args.roster_dir is not None:

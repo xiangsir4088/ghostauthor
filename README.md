@@ -244,6 +244,7 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - [x] v0.3 — web UI: local read-only dashboard, stdlib only, byte-stable JSON, side-by-side comparison
 - [x] v0.3.1 — `--base`: CLI two-branch diff (git range `base..target`; the web UI compares two refs side by side)
 - [x] v0.3.1 — per-author × per-agent cross-tabulation (every cell traceable to a commit list)
+- [x] v0.3.2 — encoding hardening: UTF-8 stdout/stderr and git subprocess (`i18n.logOutputEncoding`, `core.quotepath=false`) so Chinese Windows (GBK locale) never mangles reports; web UI light theme
 - [ ] v1.0 — write path (opt-in trailer signing), with the attestation boundary documented
 
 ## Tests

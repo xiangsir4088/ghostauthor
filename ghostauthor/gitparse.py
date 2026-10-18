@@ -58,12 +58,14 @@ class GitError(RuntimeError):
 
 def _run_git(args: List[str]) -> str:
     try:
-        # git always emits UTF-8 (its own docs and i18n.commitEncoding
-        # default); decoding with the platform locale (GBK on Chinese
-        # Windows) mangles non-ASCII names/messages or raises outright.
-        proc = subprocess.run(["git", *args], capture_output=True,
-                              text=True, encoding="utf-8",
-                              errors="replace", check=False)
+        # git's output encoding follows i18n.logOutputEncoding and non-ASCII
+        # paths get escaped unless core.quotepath is off; pin both so decoding
+        # as UTF-8 always matches what we asked git to emit.
+        proc = subprocess.run(
+            ["git", "-c", "i18n.logOutputEncoding=UTF-8",
+             "-c", "core.quotepath=false", *args],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
     except FileNotFoundError:
         raise GitError("git-missing", "git executable not found on PATH")
     if proc.returncode != 0:
