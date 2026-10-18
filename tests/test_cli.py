@@ -34,5 +34,35 @@ class WindowBoundTests(unittest.TestCase):
         self.assertIn("window-bound-invalid", str(ctx.exception))
 
 
+class StdoutEncodingTests(unittest.TestCase):
+    """Redirected stdout must stay UTF-8.
+
+    When stdout is a pipe, Python encodes with the platform locale (GBK on
+    Chinese Windows) and the ensure_ascii=False JSON report — which carries
+    raw commit messages — mangles or raises. main() must reconfigure stdout
+    to UTF-8; pinned by forcing PYTHONIOENCODING=gbk in a subprocess.
+    """
+
+    def test_json_report_survives_gbk_stdout(self):
+        import json as _json
+        import os
+        import subprocess
+        import sys
+        import tempfile
+        from pathlib import Path
+        repo = Path(__file__).resolve().parent.parent  # this repo itself
+        env = dict(os.environ, PYTHONIOENCODING="gbk")
+        with tempfile.TemporaryFile() as out:
+            proc = subprocess.run(
+                [sys.executable, "-m", "ghostauthor.cli", str(repo),
+                 "--format", "json"],
+                stdout=out, stderr=subprocess.PIPE, env=env, cwd=str(repo))
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            out.seek(0)
+            data = out.read().decode("utf-8")
+        report = _json.loads(data)
+        self.assertGreater(report["total_commits"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

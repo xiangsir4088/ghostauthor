@@ -260,5 +260,50 @@ class RefExtractionTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, "git-failed")
 
 
+class EncodingTests(unittest.TestCase):
+    """Non-ASCII commit data must survive the git subprocess round-trip.
+
+    git emits UTF-8; decoding with the platform locale (GBK on Chinese
+    Windows) mangles Chinese names/messages or raises UnicodeDecodeError.
+    Pinned against a real repository with Chinese author + message.
+    """
+
+    def test_chinese_commit_roundtrip(self):
+        import os
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        from ghostauthor.gitparse import iter_commits
+        author = "\u5f20\u4e09"          # 张三
+        message = ("\u4fee\u590d\u767b\u5f55\u6d41\u7a0b\n\n"
+                   "Co-Authored-By: Claude <noreply@anthropic.com>")
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "zh"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", "-b", "main", str(repo)],
+                           check=True, capture_output=True)
+            (repo / "f.txt").write_text("1\n", encoding="utf-8")
+            e = dict(os.environ)
+            e.update({"GIT_AUTHOR_NAME": author,
+                      "GIT_AUTHOR_EMAIL": "zhang@example.com",
+                      "GIT_COMMITTER_NAME": author,
+                      "GIT_COMMITTER_EMAIL": "zhang@example.com",
+                      "GIT_AUTHOR_DATE": "1767225600 +0000",
+                      "GIT_COMMITTER_DATE": "1767225600 +0000"})
+            subprocess.run(["git", "-C", str(repo), "add", "-A"],
+                           check=True, env=e, capture_output=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m",
+                            message],
+                           check=True, env=e, capture_output=True)
+            commits = iter_commits(str(repo))
+            self.assertEqual(len(commits), 1)
+            self.assertEqual(commits[0].author_name, author)
+            self.assertTrue(commits[0].message.startswith(
+                "\u4fee\u590d\u767b\u5f55\u6d41\u7a0b"))  # 修复登录流程
+            # the co-author trailer still parses from the Chinese message
+            self.assertEqual(len(commits[0].trailers), 1)
+            self.assertEqual(commits[0].trailers[0].name, "Claude")
+
+
 if __name__ == "__main__":
     unittest.main()
