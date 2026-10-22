@@ -1,0 +1,144 @@
+# Composite GitHub Action: run ghostauthor in your CI pipeline.
+#
+# Exit-code contract (unchanged from the CLI):
+#   0  report produced (gate, if any, not breached)
+#   2  environment or usage error (not a repo, no commits, bad roster, bad args)
+#   4  gate breached (agent-signed ratio above max-ai-ratio)
+#
+# Minimal usage:
+#   - uses: xiangsir/ghostauthor@v1
+#     with:
+#       max-ai-ratio: "0.5"
+name: "ghostauthor"
+description: >-
+  Deterministic AI code provenance audit: who signed the commits —
+  auditable, reproducible, no LLM. Fails (exit 4) when the agent-signed
+  ratio exceeds max-ai-ratio.
+
+inputs:
+  path:
+    description: "Repository path to audit (default: the checkout)."
+    required: false
+    default: "."
+  ref:
+    description: "Audit one ref (branch/tag/commit) instead of HEAD."
+    required: false
+    default: ""
+  base:
+    description: "Two-branch diff: only commits in REF..target (ideal for PRs)."
+    required: false
+    default: ""
+  all:
+    description: '"true" to scan all refs instead of HEAD.'
+    required: false
+    default: "false"
+  roster:
+    description: "Path to a custom roster JSON (default: builtin)."
+    required: false
+    default: ""
+  roster-dir:
+    description: "Directory of roster JSON files to merge (overrides roster)."
+    required: false
+    default: ""
+  since:
+    description: "Include commits with authored_at >= BOUND (epoch, YYYY-MM-DD, ISO 8601)."
+    required: false
+    default: ""
+  until:
+    description: "Include commits with authored_at < BOUND (exclusive)."
+    required: false
+    default: ""
+  session-gap:
+    description: "Max gap (minutes) between agent commits still one session."
+    required: false
+    default: ""
+  max-ai-ratio:
+    description: "Fail the job when the agent-signed commit ratio exceeds this (0..1)."
+    required: false
+    default: ""
+  format:
+    description: "Report format: text | json | markdown | sarif."
+    required: false
+    default: "text"
+  out:
+    description: "Write the report to this file instead of stdout."
+    required: false
+    default: ""
+  fail-on-breach:
+    description: >-
+      "true" (default) lets exit 4 fail the step; "false" records the
+      breach as an output but does not fail.
+    required: false
+    default: "true"
+  python-version:
+    description: "Python version used to run ghostauthor."
+    required: false
+    default: "3.11"
+
+outputs:
+  report:
+    description: "The full report text (in the chosen format)."
+    value: ${{ steps.audit.outputs.report }}
+  breached:
+    description: '"true" when the gate was breached (exit 4).'
+    value: ${{ steps.audit.outputs.breached }}
+  exit-code:
+    description: "The raw ghostauthor exit code (0/2/4)."
+    value: ${{ steps.audit.outputs.exit-code }}
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+    - name: Install ghostauthor from this action
+      shell: bash
+      run: python -m pip install "$GITHUB_ACTION_PATH"
+    - name: Audit
+      id: audit
+      shell: bash
+      env:
+        GA_PATH: ${{ inputs.path }}
+        GA_REF: ${{ inputs.ref }}
+        GA_BASE: ${{ inputs.base }}
+        GA_ALL: ${{ inputs.all }}
+        GA_ROSTER: ${{ inputs.roster }}
+        GA_ROSTER_DIR: ${{ inputs.roster-dir }}
+        GA_SINCE: ${{ inputs.since }}
+        GA_UNTIL: ${{ inputs.until }}
+        GA_SESSION_GAP: ${{ inputs.session-gap }}
+        GA_MAX_AI_RATIO: ${{ inputs.max-ai-ratio }}
+        GA_FORMAT: ${{ inputs.format }}
+        GA_OUT: ${{ inputs.out }}
+        GA_FAIL_ON_BREACH: ${{ inputs.fail-on-breach }}
+      run: |
+        set +e
+        argv=(ghostauthor "$GA_PATH" --format "$GA_FORMAT")
+        [ -n "$GA_REF" ]        && argv+=(--ref "$GA_REF")
+        [ -n "$GA_BASE" ]       && argv+=(--base "$GA_BASE")
+        [ "$GA_ALL" = "true" ]  && argv+=(--all)
+        [ -n "$GA_ROSTER" ]     && argv+=(--roster "$GA_ROSTER")
+        [ -n "$GA_ROSTER_DIR" ] && argv+=(--roster-dir "$GA_ROSTER_DIR")
+        [ -n "$GA_SINCE" ]      && argv+=(--since "$GA_SINCE")
+        [ -n "$GA_UNTIL" ]      && argv+=(--until "$GA_UNTIL")
+        [ -n "$GA_SESSION_GAP" ] && argv+=(--session-gap "$GA_SESSION_GAP")
+        [ -n "$GA_MAX_AI_RATIO" ] && argv+=(--max-ai-ratio "$GA_MAX_AI_RATIO")
+        [ -n "$GA_OUT" ]        && argv+=(--out "$GA_OUT")
+        code=0
+        report="$(ghostauthor "${argv[@]}")" || code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        echo "breached=$([ "$code" -eq 4 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        # Multiline output: report text, delimited.
+        {
+          echo "report<<GA_REPORT_EOF"
+          printf '%s\n' "$report"
+          echo "GA_REPORT_EOF"
+        } >> "$GITHUB_OUTPUT"
+        if [ "$code" -ne 0 ] && [ "$code" -ne 4 ] && [ -n "$report" ]; then
+          printf '%s\n' "$report" >&2
+        fi
+        if [ "$code" -eq 4 ] && [ "$GA_FAIL_ON_BREACH" != "true" ]; then
+          exit 0
+        fi
+        exit "$code"

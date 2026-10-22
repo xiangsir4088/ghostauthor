@@ -1,0 +1,61 @@
+# ghostauthor CI: tests + verify matrix + self-audit.
+#
+# The self-audit job dogfoods the tool on this very repository: it runs the
+# local CLI (not the published action) so a broken change cannot pass by
+# falling back to the last release.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: tests (py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Self-audit fixtures and PR-range audits need full history.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Verify matrix
+        run: python verify.py
+
+  self-audit:
+    name: self-audit (agent-signature ledger)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Audit HEAD
+        # No gate on the whole history; record the ledger as a CI artifact.
+        run: |
+          python -m ghostauthor.cli . --format json --out audit-head.json
+          python -m ghostauthor.cli . --format markdown | tee audit-head.md
+      - name: Audit PR range
+        if: github.event_name == 'pull_request'
+        # Two-branch diff: only what this PR adds over its base.
+        run: |
+          python -m ghostauthor.cli . --base origin/${{ github.base_ref }} \
+            --format json --out audit-pr.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghostauthor-audit
+          path: audit-*.json*
+          if-no-files-found: error

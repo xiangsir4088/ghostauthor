@@ -403,6 +403,51 @@ def main() -> int:
 
     step("no build artifacts in the source tree", clean_ok)
 
+    # 17. CI assets: action.yml + workflows + docs stay consistent
+    def ci_assets_ok():
+        action = ROOT / "action.yml"
+        check("ci_action_exists", action.exists(), "action.yml missing")
+        text = action.read_text(encoding="utf-8")
+        # Composite action shape: runs.using composite, one setup-python step.
+        check("ci_action_composite", "using: \"composite\"" in text)
+        check("ci_action_setup_python", "actions/setup-python@v5" in text)
+        # Every declared input must be surfaced in the audit step env block.
+        required_inputs = ["path", "ref", "base", "all", "roster", "roster-dir",
+                           "since", "until", "session-gap", "max-ai-ratio",
+                           "format", "out", "fail-on-breach", "python-version"]
+        for name in required_inputs:
+            check(f"ci_input_{name}", f"inputs.{name}" in text,
+                  f"input {name} not referenced in action.yml")
+        for out in ("report", "breached", "exit-code"):
+            check(f"ci_output_{out}", f"{out}:" in text,
+                  f"output {out} missing in action.yml")
+        # Exit-code contract must be preserved in the audit step.
+        check("ci_exit4_passthrough", '"$code" -eq 4' in text,
+              "action must let exit 4 surface")
+        workflows = ROOT / ".github" / "workflows"
+        ci = workflows / "ci.yml"
+        example = workflows / "pr-audit.example.yml"
+        check("ci_workflow_exists", ci.exists())
+        check("ci_pr_example_exists", example.exists())
+        ci_text = ci.read_text(encoding="utf-8")
+        for needle in ("python verify.py", "self-audit", "actions/checkout@v4"):
+            check(f"ci_workflow_{needle.split()[0]}", needle in ci_text,
+                  f"ci.yml missing {needle!r}")
+        ex_text = example.read_text(encoding="utf-8")
+        for needle in ("xiangsir/ghostauthor@v1", "pull-requests: write",
+                       "pr comment"):
+            check(f"ci_example_{needle.split()[0]}", needle in ex_text,
+                  f"pr-audit.example.yml missing {needle!r}")
+        # Docs cover the same contract the action declares.
+        doc = (ROOT / "docs" / "ci.md")
+        check("ci_docs_exists", doc.exists())
+        doc_text = doc.read_text(encoding="utf-8")
+        for name in ("max-ai-ratio", "fail-on-breach", "exit-code"):
+            check(f"ci_docs_{name}", name in doc_text,
+                  f"docs/ci.md missing {name}")
+
+    step("CI assets (action.yml + workflows + docs) consistent", ci_assets_ok)
+
     print("=" * 44)
     if SKIPPED:
         print(f"skipped ({len(SKIPPED)}): " + ", ".join(SKIPPED))

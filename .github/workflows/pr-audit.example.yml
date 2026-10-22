@@ -1,0 +1,47 @@
+# PR audit: run ghostauthor on the PR range and post the markdown report
+# as a PR comment. Copy this file into the CONSUMER repository (not this
+# one) and it works as-is — it consumes the published action.
+#
+# The gate (--max-ai-ratio) is intentionally off in this template: the
+# comment is an audit artifact, not a hard block. Add `max-ai-ratio: "0.5"`
+# to the action step when you want the job to fail above the threshold.
+name: ghostauthor PR audit
+
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  pull_request:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The PR-range diff needs full history to compute base..head.
+          fetch-depth: 0
+      - name: Audit PR range
+        id: audit
+        uses: xiangsir/ghostauthor@v1
+        with:
+          base: "origin/${{ github.base_ref }}"
+          format: "markdown"
+          # Gate off by default; uncomment to hard-block:
+          # max-ai-ratio: "0.5"
+          fail-on-breach: "false"
+      - name: Post report as PR comment
+        if: always() && steps.audit.outputs.exit-code != '2'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT: ${{ steps.audit.outputs.report }}
+          CODE: ${{ steps.audit.outputs.exit-code }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "## 📋 ghostauthor audit (exit \`$CODE\`)"
+            echo
+            printf '%s\n' "$REPORT"
+          } > comment.md
+          gh pr comment "$NUMBER" --body-file comment.md
