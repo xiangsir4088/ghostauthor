@@ -59,7 +59,8 @@ class WebAPITests(unittest.TestCase):
         cli = subprocess.run(
             [sys.executable, "-m", "ghostauthor.cli", str(self.mixed),
              "--format", "json"],
-            capture_output=True, text=True, cwd=str(ROOT))
+            capture_output=True, text=True, encoding="utf-8",
+            cwd=str(ROOT))
         self.assertEqual(cli.returncode, 0, cli.stderr)
         self.assertEqual(body["results"][0]["report"], json.loads(cli.stdout))
 

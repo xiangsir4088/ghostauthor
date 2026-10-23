@@ -47,7 +47,7 @@ def skip(name, reason):
 def run_cli(*args, cwd=None):
     return subprocess.run(
         [sys.executable, "-m", "ghostauthor.cli", *[str(a) for a in args]],
-        capture_output=True, text=True, cwd=str(cwd or ROOT))
+        capture_output=True, text=True, encoding="utf-8", cwd=str(cwd or ROOT))
 
 
 def check(name, cond, detail=""):
