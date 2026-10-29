@@ -14,8 +14,16 @@ def _pct(n: int, total: int) -> str:
     return f"{(n / total * 100):.1f}%" if total else "0.0%"
 
 
+# The JSON contract generation. Additive changes (new keys) keep it; a
+# rename / deletion / retype / semantic change bumps it. Policy and the
+# frozen key set live in docs/schema.md; the machine-checkable form is
+# schema/report.schema.json (verify step 18).
+SCHEMA_VERSION = "1"
+
+
 def render_json(report: Report) -> str:
     data = {
+        "schema_version": SCHEMA_VERSION,
         "ref": report.ref,
         "repo": report.repo_path,
         "total_commits": report.total_commits,

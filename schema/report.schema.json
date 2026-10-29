@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atomgit.com/xiangsir/ghostauthor/schema/report.schema.json",
+  "title": "ghostauthor JSON report — schema_version 1",
+  "description": "Frozen output contract of `ghostauthor --format json`. The MCP tool `repo_authorship_report` and the web transport emit these same bytes (one source of truth, two skins). Compatibility policy: additive key additions keep schema_version 1; rename / delete / retype / semantic change bumps it. See docs/schema.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "agents",
+    "ai_ratio",
+    "authors",
+    "bucket_commit_shas",
+    "commits_by_bucket",
+    "cosigned_evidence",
+    "findings",
+    "gate",
+    "lines_by_bucket",
+    "ref",
+    "repo",
+    "schema_version",
+    "sessions",
+    "total_commits",
+    "window"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1"]
+    },
+    "ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repo": {
+      "type": "string",
+      "minLength": 1
+    },
+    "total_commits": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "commits_by_bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "cosigned", "unsigned"],
+      "properties": {
+        "agent": { "type": "integer", "minimum": 0 },
+        "cosigned": { "type": "integer", "minimum": 0 },
+        "unsigned": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "lines_by_bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "cosigned", "unsigned"],
+      "properties": {
+        "agent": { "type": "integer", "minimum": 0 },
+        "cosigned": { "type": "integer", "minimum": 0 },
+        "unsigned": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "bucket_commit_shas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "cosigned", "unsigned"],
+      "properties": {
+        "agent": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+        },
+        "cosigned": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+        },
+        "unsigned": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+        }
+      }
+    },
+    "ai_ratio": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "agents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "commits",
+          "display_name",
+          "first_ts",
+          "id",
+          "last_ts",
+          "lines_added",
+          "lines_removed",
+          "longest_session_commits",
+          "sessions"
+        ],
+        "properties": {
+          "commits": { "type": "integer", "minimum": 1 },
+          "display_name": { "type": "string", "minLength": 1 },
+          "first_ts": { "type": "integer" },
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+          "last_ts": { "type": "integer" },
+          "lines_added": { "type": "integer", "minimum": 0 },
+          "lines_removed": { "type": "integer", "minimum": 0 },
+          "longest_session_commits": { "type": "integer", "minimum": 1 },
+          "sessions": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "authors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["by_agent", "by_agent_shas", "commits", "email", "name"],
+        "properties": {
+          "by_agent": {
+            "type": "object",
+            "additionalProperties": { "type": "integer", "minimum": 1 }
+          },
+          "by_agent_shas": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+            }
+          },
+          "commits": { "type": "integer", "minimum": 1 },
+          "email": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      }
+    },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["agent", "commit_shas", "end_ts", "start_ts"],
+        "properties": {
+          "agent": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+          "commit_shas": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+          },
+          "end_ts": { "type": "integer" },
+          "start_ts": { "type": "integer" }
+        }
+      }
+    },
+    "cosigned_evidence": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["detail", "evidence", "rule", "severity"],
+        "properties": {
+          "detail": { "type": "string" },
+          "evidence": { "type": "string" },
+          "rule": { "type": "string", "minLength": 1 },
+          "severity": { "type": "string", "enum": ["info", "warn"] }
+        }
+      }
+    },
+    "gate": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["breached", "limit", "ratio"],
+      "properties": {
+        "breached": { "type": "boolean" },
+        "limit": { "type": "number", "minimum": 0, "maximum": 1 },
+        "ratio": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "window": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["since", "until"],
+      "properties": {
+        "since": { "type": ["integer", "null"] },
+        "until": { "type": ["integer", "null"] }
+      }
+    }
+  }
+}

@@ -448,6 +448,62 @@ def main() -> int:
 
     step("CI assets (action.yml + workflows + docs) consistent", ci_assets_ok)
 
+    # 18. schema freeze: report.schema.json is valid, the real CLI output
+    #     validates against it, the golden snapshot is byte-stable, and the
+    #     freeze is ENFORCED (a mutated report must be rejected).
+    def schema_freeze_ok():
+        from tests.golden import GOLDEN_FILE, golden_bytes
+        from tests.schemacheck import (SCHEMA_FILE, load_schema,
+                                       schema_meta_errors, validate)
+        import copy as _copy
+        import json as _json
+
+        check("schema_file_exists", SCHEMA_FILE.exists(),
+              "schema/report.schema.json missing")
+        schema = load_schema()
+        # (a) the schema itself is valid — within the frozen keyword subset
+        meta = schema_meta_errors(schema)
+        check("schema_meta", not meta, f"{meta[:3]}")
+        check("schema_pins_15_keys",
+              len(schema["required"]) == 15 and
+              set(schema["required"]) == set(schema["properties"]),
+              f"keys={sorted(schema['required'])}")
+
+        # (b) the REAL CLI output validates against the frozen schema
+        tmp2 = Path(tempfile.mkdtemp(prefix="ghostauthor-schema-"))
+        try:
+            mixed2 = build_mixed(tmp2)
+            proc = run_cli(mixed2, "--format", "json")
+            check("schema_cli_exit", proc.returncode == 0, proc.stderr)
+            data = _json.loads(proc.stdout)
+            errs = validate(data, schema)
+            check("schema_cli_output", not errs, f"{errs[:3]}")
+        finally:
+            shutil.rmtree(tmp2, ignore_errors=True)
+
+        # (c) golden snapshot: re-rendering the fixed dataset is byte-stable
+        check("golden_exists", GOLDEN_FILE.exists(), "golden snapshot missing")
+        check("golden_bytes",
+              golden_bytes() == GOLDEN_FILE.read_text(encoding="utf-8"),
+              "golden snapshot drifts from render_json output")
+        # and the golden itself is a schema-positive instance
+        golden_data = _json.loads(GOLDEN_FILE.read_text(encoding="utf-8"))
+        check("golden_validates", not validate(golden_data, schema),
+              f"{validate(golden_data, schema)[:3]}")
+
+        # (d) the freeze is enforced: mutations must be rejected by name
+        broken = _copy.deepcopy(data)
+        del broken["total_commits"]
+        check("freeze_rejects_removed_key",
+              any("total_commits" in e for e in validate(broken, schema)))
+        broken = _copy.deepcopy(data)
+        broken["bogus"] = 1
+        check("freeze_rejects_added_key",
+              any("bogus" in e for e in validate(broken, schema)))
+
+    step("schema freeze (report.schema.json + golden + enforced)",
+         schema_freeze_ok)
+
     print("=" * 44)
     if SKIPPED:
         print(f"skipped ({len(SKIPPED)}): " + ", ".join(SKIPPED))

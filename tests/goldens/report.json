@@ -1,0 +1,94 @@
+{
+  "agents": [
+    {
+      "commits": 1,
+      "display_name": "Claude (Anthropic)",
+      "first_ts": 1767225600,
+      "id": "claude",
+      "last_ts": 1767225600,
+      "lines_added": 10,
+      "lines_removed": 2,
+      "longest_session_commits": 1,
+      "sessions": 1
+    }
+  ],
+  "ai_ratio": 0.3333333333333333,
+  "authors": [
+    {
+      "by_agent": {
+        "claude": 1,
+        "cosigned": 1,
+        "unsigned": 1
+      },
+      "by_agent_shas": {
+        "claude": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "cosigned": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "unsigned": [
+          "cccccccccccccccccccccccccccccccccccccccc"
+        ]
+      },
+      "commits": 3,
+      "email": "sam@example.com",
+      "name": "Sam Human"
+    }
+  ],
+  "bucket_commit_shas": {
+    "agent": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "cosigned": [
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ],
+    "unsigned": [
+      "cccccccccccccccccccccccccccccccccccccccc"
+    ]
+  },
+  "commits_by_bucket": {
+    "agent": 1,
+    "cosigned": 1,
+    "unsigned": 1
+  },
+  "cosigned_evidence": [
+    "bbbbbbbbbbbb: Co-Authored-By: VibeBot <vibe@example.com>"
+  ],
+  "findings": [
+    {
+      "detail": "Co-Authored-By present but no roster rule matched",
+      "evidence": "bbbbbbbbbbbb: Co-Authored-By: VibeBot <vibe@example.com>",
+      "rule": "cosigned-unknown",
+      "severity": "warn"
+    }
+  ],
+  "gate": {
+    "breached": false,
+    "limit": 0.5,
+    "ratio": 0.333333
+  },
+  "lines_by_bucket": {
+    "agent": 12,
+    "cosigned": 3,
+    "unsigned": 6
+  },
+  "ref": "golden",
+  "repo": "golden-repo",
+  "schema_version": "1",
+  "sessions": [
+    {
+      "agent": "claude",
+      "commit_shas": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      "end_ts": 1767225600,
+      "start_ts": 1767225600
+    }
+  ],
+  "total_commits": 3,
+  "window": {
+    "since": 1767225600,
+    "until": 1767226600
+  }
+}
