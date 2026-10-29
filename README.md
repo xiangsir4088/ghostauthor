@@ -46,6 +46,23 @@ ghostauthor /path/to/your/repo --format sarif
 # SARIF 2.1.0 for compliance pipelines
 ```
 
+Signing (opt-in, v1.0) — the only write path, off by default:
+
+```bash
+ghostauthor sign /path/to/repo --agent claude
+# dry-run by default: shows the amended message, writes nothing
+ghostauthor sign /path/to/repo --agent claude --commit
+# actually amends HEAD with the agent's Co-Authored-By trailer (roster `signing` identity)
+```
+
+The JSON contract it reads and writes under is frozen: `schema_version` in
+the output, `schema/report.schema.json` as the machine-checkable form,
+`docs/schema.md` as the single source of truth (compatibility policy
+included). What signing means — and what it deliberately is **not** — is
+documented in [docs/attestation.md](docs/attestation.md): the read side
+reports, the write side makes a claim, and the tool makes claims easy and
+auditable, not true.
+
 No repository handy? Clone this one and build the bundled demo fixtures
 (deterministic: fixed dates, identities, contents — the SHAs are stable):
 
@@ -140,7 +157,8 @@ transport is **read-only**: it reports, it never executes.
 | No LLM anywhere in the verdict path | A reviewer that can be steered by wording will eventually be steered by wording. Verdicts must be re-runnable, auditable, and appealable. |
 | Trailers only — no style detection | Provenance, not guessing. "Unsigned" is a category, not an accusation: unsigned ≠ human. |
 | Stdlib only, zero dependencies | An audit tool must run on the machine it audits. No venv ritual, no supply chain of its own. |
-| Read-only MCP server, one tool | The moment a tool can *act*, the risk model changes from "advice" to "supervised decision". `ghostauthor` refuses that category change. |
+| Read-only MCP server, one tool | The read side reports; it never executes. That is an invariant, not a promise. |
+| One write path, opt-in, supervised (v1.0) | The moment a tool can *act*, the risk model changes from "advice" to "supervised decision". So the write path crosses that line **on purpose and visibly**: `ghostauthor sign` is an explicit subcommand (no hook, no default), dry-run by default, idempotent, refuses conflicts, and signs only with identities the roster itself validates. The boundary is written down in [docs/attestation.md](docs/attestation.md). |
 | Exit codes `0/2/4` as a CI contract | A tool nobody can wire into a pipeline is a toy. |
 | Missing ≡ empty, never an exception | Incomplete data is the norm. A tool that crashes on a malformed trailer demands "fill it in completely first" — nobody does that under pressure. |
 
@@ -168,6 +186,26 @@ These are not features. They are the things that would quietly rot the tool:
    `--max-ai-ratio` is a PASS (`>`, not `>=`); a window *includes* its
    `--since` bound and *excludes* its `--until` bound. Changing any of
    these semantics requires changing the test on purpose.
+
+The write path (v1.0) adds five more — see
+[docs/attestation.md](docs/attestation.md) for the full boundary:
+
+6. **Round-trip (load-bearing).** Sign a commit with a roster agent and
+   the audit must attribute it to that agent — never `cosigned`, never
+   `unsigned`. A signature that could not be read back is refused at
+   roster validation (`roster-signing-roundtrip`) and again at sign time
+   (`sign-ambiguous`), not written.
+7. **Idempotency.** Signing an already-signed commit is a no-op; the
+   second run's diff is empty.
+8. **Opt-in & consent.** The command exists only when explicitly invoked
+   (no hook, no default flow); dry-run is the default and `--commit` is
+   the explicit consent.
+9. **No-merge on conflict.** A commit already signed by *another* roster
+   agent is refused (`sign-conflict`) — conflicts are for humans, never
+   for the tool to resolve.
+10. **Single source of truth.** Matching (read) and signing (write) share
+    one roster; the signing identity is part of that agent's roster
+    record, not env or free text.
 
 ## A traceable sample (real run, JSON fragment)
 
@@ -222,6 +260,11 @@ roster**. The builtin roster ships 8 agents; yours is probably not on it:
   `name_patterns` (regexes matched against the trailer name) and
   `email_domains` (matched against the trailer's email domain). The first
   match in file order wins — precedence is data, not magic.
+- An optional `signing` section (`{"name": ..., "email": ...}`) opts the
+  agent into the write path: `ghostauthor sign --agent <id>` will then
+  sign with exactly that identity — and the validator rejects any
+  identity that would not read back to its own agent
+  (`roster-signing-roundtrip`).
 - Rosters are **validated, not trusted**: duplicate ids, broken regexes,
   empty selectors are rejected with a rule id — never silently repaired. A
   silently "fixed" roster would make the verdict unauditable.
@@ -245,11 +288,13 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - [x] v0.3.1 — `--base`: CLI two-branch diff (git range `base..target`; the web UI compares two refs side by side)
 - [x] v0.3.1 — per-author × per-agent cross-tabulation (every cell traceable to a commit list)
 - [x] v0.3.2 — encoding hardening: UTF-8 stdout/stderr and git subprocess (`i18n.logOutputEncoding`, `core.quotepath=false`) so Chinese Windows (GBK locale) never mangles reports; web UI light theme
-- [ ] v1.0 — write path (opt-in trailer signing), with the attestation boundary documented
+- [x] v0.4.0 — CI integration: composite GitHub Action, self-audit workflow, PR comment template
+- [x] v0.5.0 — read-side contract frozen: `schema_version` in the JSON, `schema/report.schema.json`, golden snapshot, verify enforces the freeze (a mutation goes red)
+- [x] v1.0.0 — write path: opt-in `ghostauthor sign` (dry-run default, `--commit` to apply, idempotent, conflict refused) with the detection/attestation boundary documented in `docs/attestation.md`
 
 ## Tests
 
-86 tests pin **properties**, not coverage:
+129 tests pin **properties**, not coverage:
 
 - **Reproducibility** — same repo state ⇒ identical report, regardless of input order
 - **Trailer-block semantics** — negative cases: signature in the body, signature followed by prose, CRLF messages, missing email, lowercase keys, continuation lines
@@ -259,6 +304,9 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - **Window boundary** — `--since` inclusive, `--until` exclusive; an empty or inverted window is a contract error, not a silently empty report
 - **Window-bound parsing** — epoch / date / ISO 8601 resolve to the same instants; naive values are UTC; garbage is rejected
 - **Roster-dir merge** — sorted filename order, cross-file duplicate ids rejected by rule id
+- **Signing identity** — the roster `signing` section is optional; a signing identity that would not read back to its own agent is rejected (`roster-signing-roundtrip`), never repaired
+- **Write path** — dry-run is the default (nothing lands without `--commit`); sign → audit round-trips to the same agent; a second sign is a no-op; another roster agent's signature is refused (`sign-conflict`); an identity that roster precedence would misattribute is refused (`sign-ambiguous`); every error path exits 2 and changes nothing
+- **Schema freeze** — the real `render_json` output validates against `schema/report.schema.json`; the golden snapshot is byte-stable; removed/added keys are rejected by name
 - **SARIF mapping** — byte-stable; findings → results with rule descriptors; a breached gate is an `error`-level result
 - **Framing contract** — the git-output parser is pinned against crafted streams, including rejection of unframed output
 - **Ref scoping** — a ref limits the scan to that branch/tag/commit; combining it with `--all` is rejected (`ref-conflict`); a missing path is `not-a-repo`, never a server failure
@@ -269,8 +317,9 @@ no recomputation, the MCP server does no execution). Keep it that way.
 One click runs the whole matrix (roster → unit suite → 3 deterministic
 fixture repos → CLI exit codes → real MCP `initialize`/`tools/list`/
 `tools/call` → rendering → time window → roster-dir merge → SARIF → live
-web server, byte-stable vs the CLI → two-branch diff + cross-tab), and
-prints anything it skips and why:
+web server, byte-stable vs the CLI → two-branch diff + cross-tab → CI
+assets → schema freeze, enforced → write path: round-trip / idempotency /
+conflict / default-off), and prints anything it skips and why:
 
 ```bash
 python verify.py

@@ -28,6 +28,13 @@ class AgentRule:
     display_name: str
     name_patterns: Tuple[re.Pattern, ...]
     email_domains: frozenset
+    # Opt-in signing identity for the write path (`ghostauthor sign`):
+    # (name, email) as they will appear in the Co-Authored-By trailer.
+    # None = this agent cannot be signed with. Validation guarantees the
+    # round-trip load-bearing constraint (roster-signing-roundtrip): the
+    # identity matches THIS agent's own rules, so a signed commit is
+    # attributed back to this agent by the read side.
+    signing: Optional[Tuple[str, str]] = None
 
 
 @dataclass
@@ -159,6 +166,35 @@ def validate_roster(raw: object, source: str = "<builtin>") -> Roster:
             raise _fail("roster-agent-empty",
                         f"{where}: at least one name pattern or email domain required")
 
+        signing: Optional[Tuple[str, str]] = None
+        signing_raw = entry.get("signing")
+        if signing_raw is not None:
+            if not isinstance(signing_raw, dict):
+                raise _fail("roster-signing-type",
+                            f"{where}: signing must be an object")
+            name = signing_raw.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise _fail("roster-signing-name",
+                            f"{where}.signing.name: non-empty string required")
+            email = signing_raw.get("email")
+            if not isinstance(email, str) or not email.strip():
+                raise _fail("roster-signing-email",
+                            f"{where}.signing.email: non-empty string required")
+            name, email = name.strip(), email.strip()
+            if "@" not in email:
+                raise _fail("roster-signing-email",
+                            f"{where}.signing.email: must contain '@' ({email!r})")
+            domain = email.rsplit("@", 1)[1].strip().lower()
+            if domain not in domains and not any(rx.match(name) for rx in patterns):
+                raise _fail(
+                    "roster-signing-roundtrip",
+                    f"{where}: signing identity must match this agent's own "
+                    f"rules (email domain in email_domains or name in "
+                    f"name_patterns) — otherwise the audit cannot attribute "
+                    f"a signature back to {agent_id!r}")
+            signing = (name, email)
+
         agents.append(AgentRule(agent_id, display.strip(),
-                                tuple(patterns), frozenset(domains)))
+                                tuple(patterns), frozenset(domains),
+                                signing=signing))
     return Roster(version=version, agents=agents, source=source)

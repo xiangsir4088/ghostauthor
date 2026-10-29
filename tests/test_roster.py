@@ -96,6 +96,66 @@ class RosterValidationTests(unittest.TestCase):
         raw["agents"] = []
         self._expect(raw, "roster-agents")
 
+    # ---- signing (v1.0 write path): opt-in identity, round-trip pinned ----
+
+    def test_signing_is_optional(self):
+        roster = validate_roster(copy.deepcopy(GOOD))
+        self.assertIsNone(roster.agents[0].signing)
+
+    def test_signing_accepted_by_domain_roundtrip(self):
+        raw = copy.deepcopy(GOOD)
+        raw["agents"][0]["signing"] = {"name": "Claude",
+                                       "email": "noreply@anthropic.com"}
+        roster = validate_roster(raw)
+        self.assertEqual(roster.agents[0].signing,
+                         ("Claude", "noreply@anthropic.com"))
+        self.assertIsNone(roster.agents[1].signing)
+
+    def test_signing_accepted_by_name_pattern_roundtrip(self):
+        raw = copy.deepcopy(GOOD)
+        # domain NOT in email_domains, but the name hits name_patterns:
+        # the round-trip constraint holds via the pattern branch
+        raw["agents"][0]["signing"] = {"name": "Claude Code",
+                                       "email": "x@elsewhere.org"}
+        roster = validate_roster(raw)
+        self.assertEqual(roster.agents[0].signing,
+                         ("Claude Code", "x@elsewhere.org"))
+
+    def test_rejects_signing_not_an_object(self):
+        raw = copy.deepcopy(GOOD)
+        raw["agents"][0]["signing"] = "Claude"
+        self._expect(raw, "roster-signing-type")
+
+    def test_rejects_signing_missing_name(self):
+        raw = copy.deepcopy(GOOD)
+        raw["agents"][0]["signing"] = {"email": "noreply@anthropic.com"}
+        self._expect(raw, "roster-signing-name")
+
+    def test_rejects_signing_empty_name(self):
+        raw = copy.deepcopy(GOOD)
+        raw["agents"][0]["signing"] = {"name": "   ",
+                                       "email": "noreply@anthropic.com"}
+        self._expect(raw, "roster-signing-name")
+
+    def test_rejects_signing_missing_email(self):
+        raw = copy.deepcopy(GOOD)
+        raw["agents"][0]["signing"] = {"name": "Claude"}
+        self._expect(raw, "roster-signing-email")
+
+    def test_rejects_signing_email_without_at(self):
+        raw = copy.deepcopy(GOOD)
+        raw["agents"][0]["signing"] = {"name": "Claude",
+                                       "email": "noreply.anthropic.com"}
+        self._expect(raw, "roster-signing-email")
+
+    def test_rejects_signing_that_breaks_roundtrip(self):
+        raw = copy.deepcopy(GOOD)
+        # neither the domain nor the name matches this agent's own rules:
+        # a signature could never be attributed back to "claude"
+        raw["agents"][0]["signing"] = {"name": "NotClaude",
+                                       "email": "x@elsewhere.org"}
+        self._expect(raw, "roster-signing-roundtrip")
+
     # ---- roster-dir: merge semantics are pinned ----
 
     def _write(self, d, name, obj):

@@ -504,6 +504,146 @@ def main() -> int:
     step("schema freeze (report.schema.json + golden + enforced)",
          schema_freeze_ok)
 
+    # 19. write path (v1.0): the four invariants, machine-checked on a
+    #     fixture repo — round-trip (load-bearing), idempotency,
+    #     conflict refusal, default-off. Error paths are pinned too.
+    def write_path_ok():
+        import json as _json
+        import os as _os
+
+        sign_tmp = Path(tempfile.mkdtemp(prefix="ghostauthor-sign-"))
+        try:
+            repo = sign_tmp / "repo"
+            repo.mkdir()
+            roster_raw = {
+                "version": 1,
+                "agents": [
+                    {"id": "claude", "display_name": "Claude (Anthropic)",
+                     "name_patterns": ["^Claude\\b"],
+                     "email_domains": ["anthropic.com"],
+                     "signing": {"name": "Claude",
+                                 "email": "noreply@anthropic.com"}},
+                    {"id": "codex", "display_name": "Codex (OpenAI)",
+                     "name_patterns": ["^OpenAI Codex\\b"],
+                     "email_domains": ["openai.com"],
+                     "signing": {"name": "OpenAI Codex",
+                                 "email": "noreply@openai.com"}},
+                    {"id": "plain", "display_name": "Plain",
+                     "name_patterns": ["^Plain\\b"], "email_domains": []},
+                ],
+            }
+            roster_file = sign_tmp / "roster.json"
+            roster_file.write_text(_json.dumps(roster_raw), encoding="utf-8")
+            wild_roster = sign_tmp / "roster-wild.json"
+            wild_roster.write_text(_json.dumps({
+                "version": 1,
+                "agents": [
+                    {"id": "wild", "display_name": "Wild",
+                     "name_patterns": [".*"], "email_domains": [],
+                     "signing": {"name": "Wild",
+                                 "email": "wild@wild.example"}},
+                    roster_raw["agents"][0],
+                ],
+            }), encoding="utf-8")
+
+            env = dict(_os.environ,
+                       GIT_AUTHOR_NAME="Sam Human",
+                       GIT_AUTHOR_EMAIL="sam@example.com",
+                       GIT_COMMITTER_NAME="Sam Human",
+                       GIT_COMMITTER_EMAIL="sam@example.com")
+
+            def g(*args):
+                subprocess.run(["git", "-C", str(repo), *args], check=True,
+                               env=env, capture_output=True, text=True)
+
+            g("init", "-b", "main")
+            (repo / "f.txt").write_text("1\n", encoding="utf-8")
+            g("add", "-A")
+            g("commit", "-m", "initial")
+
+            # CLI subprocesses get the controlled identity too: a real
+            # `git commit --amend` needs a committer, and this step must
+            # be hermetic (CI runners have no global git identity).
+            def cli_env(*args):
+                return subprocess.run(
+                    [sys.executable, "-m", "ghostauthor.cli",
+                     *[str(a) for a in args]],
+                    capture_output=True, text=True, encoding="utf-8",
+                    env=env, cwd=str(ROOT))
+
+            def sign(*extra, roster=roster_file):
+                return cli_env("sign", repo, "--roster", roster, *extra)
+
+            def head():
+                return subprocess.run(
+                    ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                    capture_output=True, text=True, env=env).stdout.strip()
+
+            def message():
+                return subprocess.run(
+                    ["git", "-C", str(repo), "log", "-1", "--format=%B"],
+                    capture_output=True, text=True, env=env).stdout
+
+            # (a) default-off: no --commit means nothing is written
+            p = sign("--agent", "claude")
+            check("sign_default_off_rc", p.returncode == 0, p.stderr)
+            check("sign_default_off_dryrun", "[dry-run]" in p.stdout)
+            sha0 = head()
+            check("sign_default_off_sha", head() == sha0,
+                  "dry-run must not amend HEAD")
+            check("sign_default_off_msg",
+                  "Co-Authored-By: Claude" not in message())
+
+            # (b) round-trip (load-bearing): sign -> audit attributes to
+            #     the SAME roster agent
+            p = sign("--agent", "claude", "--commit")
+            check("sign_commit_rc", p.returncode == 0, p.stderr)
+            sha1 = head()
+            check("sign_commit_sha_changed", sha1 != sha0)
+            audit = cli_env(repo, "--format", "json", "--roster", roster_file)
+            check("sign_audit_rc", audit.returncode == 0, audit.stderr)
+            data = _json.loads(audit.stdout)
+            check("sign_roundtrip_bucket",
+                  data["commits_by_bucket"]["agent"] == 1,
+                  f"buckets={data['commits_by_bucket']}")
+            check("sign_roundtrip_agent",
+                  bool(data["agents"]) and data["agents"][0]["id"] == "claude",
+                  f"agents={data['agents']}")
+            check("sign_roundtrip_sha",
+                  data["bucket_commit_shas"]["agent"] == [sha1])
+
+            # (c) idempotency: a second sign is a no-op, the diff is empty
+            p = sign("--agent", "claude", "--commit")
+            check("sign_idempotent_rc", p.returncode == 0, p.stderr)
+            check("sign_idempotent_noop", "already signed" in p.stdout)
+            check("sign_idempotent_sha", head() == sha1,
+                  "second sign must produce an empty diff")
+
+            # (d) no-merge on conflict: another roster agent => refused,
+            #     repository untouched
+            p = sign("--agent", "codex", "--commit")
+            check("sign_conflict_rc", p.returncode == 2)
+            check("sign_conflict_err", "sign-conflict" in p.stderr)
+            check("sign_conflict_untouched", head() == sha1)
+
+            # (e) error paths exit 2 and change nothing
+            p = sign("--agent", "nope")
+            check("sign_unknown_agent",
+                  p.returncode == 2 and "sign-agent-unknown" in p.stderr)
+            p = sign("--agent", "plain")
+            check("sign_no_signing",
+                  p.returncode == 2 and "sign-no-signing" in p.stderr)
+            p = sign("--agent", "claude", roster=wild_roster)
+            check("sign_ambiguous_broad_pattern",
+                  p.returncode == 2 and "sign-ambiguous" in p.stderr,
+                  p.stderr)
+            check("sign_ambiguous_untouched", head() == sha1)
+        finally:
+            shutil.rmtree(sign_tmp, ignore_errors=True)
+
+    step("write path (v1.0): round-trip / idempotency / conflict / "
+         "default-off", write_path_ok)
+
     print("=" * 44)
     if SKIPPED:
         print(f"skipped ({len(SKIPPED)}): " + ", ".join(SKIPPED))
