@@ -4,9 +4,10 @@
 answers "who claims authorship". The tool makes claims easy to make and
 impossible to hide — it does not, and cannot, verify them as true.**
 
-This document is the boundary that `ghostauthor sign` (v1.0) crosses,
-written down *before* the feature, because crossing the line is the point
-of the release — not a side effect of it.
+This document is the boundary that `ghostauthor sign` (v1.0) and the
+commit-msg hook (v1.1) cross, written down *before* the features, because
+crossing the line is the point of the releases — not a side effect of
+them.
 
 ## The two halves
 
@@ -51,14 +52,16 @@ behavior exactly — the read side never looks at `signing`).
 
 | Mechanism | What it enforces |
 |---|---|
-| opt-in, no default hook | The command only runs when explicitly invoked; nothing in any pipeline signs by default |
+| opt-in, no default hook | The command only runs when explicitly invoked; the hook only exists after an explicit `install-hook` (repo-level, marker-protected). Nothing in any pipeline signs by default |
 | dry-run by default | `--commit` is the consent; without it, the command prints and stops |
-| HEAD only, via `git commit --amend` | No history rewriting, no batch signing, pre-signing (staged, uncommitted) is deferred to v1.x |
-| idempotency | A second sign of the same commit is a no-op, never a duplicate trailer |
-| no-merge on conflict (`sign-conflict`) | A commit already signed by another roster agent is refused; conflicts are for humans |
-| single source of truth | The signing identity lives in the roster's `signing` section — the same roster the audit uses; no env vars, no free-text identities |
-| round-trip constraint (load-bearing) | The roster rejects a `signing` identity that does not match its own agent's rules; the sign command additionally refuses (`sign-ambiguous`) an identity that roster precedence would attribute to a *different* agent. A signature that cannot be read back is refused, not written |
-| identity from roster only | No inference from commit content or environment: `sign --agent` must name a roster id that exists and carries `signing` |
+| exactly one commit at a time | `sign` amends HEAD; the v1.1 hook signs the message of the commit *being born* (before it exists — no amend, no sha rewrite). No history rewriting, no batch signing, ever |
+| idempotency | A second sign of the same commit is a no-op, never a duplicate trailer — including at commit time: a presigned message keeps exactly one trailer |
+| no-merge on conflict (`sign-conflict`) | A commit already signed by another roster agent is refused; conflicts are for humans. At commit time the refusal is stronger: the hook exits non-zero and **git aborts the commit** — the conflict cannot be committed into history |
+| documented escape hatch | `git commit --no-verify` bypasses the hook; the bypass is not hidden — the audit reports the commit as `unsigned` |
+| marker-protected hook files | `install-hook` never overwrites a foreign `commit-msg` (`hook-exists`); `uninstall-hook` never removes one it did not install (`hook-not-ours`). A hook the tool cannot identify is a human's file |
+| single source of truth | The signing identity lives in the roster's `signing` section — the same roster the audit uses; no env vars, no free-text identities. The generated hook pins the roster path used at install time |
+| round-trip constraint (load-bearing) | The roster rejects a `signing` identity that does not match its own agent's rules; the sign command additionally refuses (`sign-ambiguous`) an identity that roster precedence would attribute to a *different* agent. A signature that cannot be read back is refused, not written — and `install-hook` refuses to install under such a roster, and self-tests the generated command before writing the hook |
+| identity from roster only | No inference from commit content or environment: `sign --agent` / `install-hook --agent` must name a roster id that exists and carries `signing` |
 
 ## The honest abuse surface
 

@@ -1,7 +1,7 @@
-"""vibemeter — deterministic AI code provenance ledger.
+"""ghostauthor — deterministic AI code provenance ledger.
 
 Reads what agents already sign (git Co-Authored-By trailers), never
 guesses style. No network, no LLM, stdlib only.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

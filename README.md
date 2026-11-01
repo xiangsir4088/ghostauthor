@@ -55,6 +55,27 @@ ghostauthor sign /path/to/repo --agent claude --commit
 # actually amends HEAD with the agent's Co-Authored-By trailer (roster `signing` identity)
 ```
 
+Signing at commit time (opt-in, v1.1) — a repo-level `commit-msg` hook,
+installed only when you ask for it:
+
+```bash
+ghostauthor install-hook /path/to/repo --agent claude
+# every commit now carries the trailer at commit time — before the commit
+# exists, so no amend and no sha rewrite. Replaces its own hook
+# idempotently; never touches a foreign one.
+ghostauthor uninstall-hook /path/to/repo
+# back to unsigned; a one-off bypass is `git commit --no-verify` (the
+# audit shows the bypass as an unsigned commit — nothing is hidden)
+```
+
+And a lint that warns — without rejecting — when a legal roster is fragile:
+
+```bash
+ghostauthor lint-roster --roster my-team.json
+# [warn] lint-catch-all / lint-overlap; exit 0 either way. Validation still
+# rejects malformed rosters (exit 2); lint only surfaces fragility
+```
+
 The JSON contract it reads and writes under is frozen: `schema_version` in
 the output, `schema/report.schema.json` as the machine-checkable form,
 `docs/schema.md` as the single source of truth (compatibility policy
@@ -198,8 +219,12 @@ The write path (v1.0) adds five more — see
 7. **Idempotency.** Signing an already-signed commit is a no-op; the
    second run's diff is empty.
 8. **Opt-in & consent.** The command exists only when explicitly invoked
-   (no hook, no default flow); dry-run is the default and `--commit` is
-   the explicit consent.
+    (no default flow); dry-run is the default and `--commit` is the
+    explicit consent. The v1.1 commit-msg hook extends the same line: it
+    exists only after an explicit `install-hook`, is repo-level,
+    marker-protected (a foreign `commit-msg` is never overwritten or
+    removed), and removable at any time — no repository is ever signed
+    by default.
 9. **No-merge on conflict.** A commit already signed by *another* roster
    agent is refused (`sign-conflict`) — conflicts are for humans, never
    for the tool to resolve.
@@ -254,7 +279,9 @@ lists under `bucket_commit_shas`:
 ## How to contribute
 
 The most valuable contribution to this project is **not code — it is the
-roster**. The builtin roster ships 8 agents; yours is probably not on it:
+roster**. The builtin roster ships 8 agents — 7 of them with a canonical
+`signing` identity, so `ghostauthor sign --agent claude` works out of the
+box; yours is probably not on it:
 
 - `ghostauthor/roster/agents.json` is declarative: `id`, `display_name`,
   `name_patterns` (regexes matched against the trailer name) and
@@ -291,10 +318,11 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - [x] v0.4.0 — CI integration: composite GitHub Action, self-audit workflow, PR comment template
 - [x] v0.5.0 — read-side contract frozen: `schema_version` in the JSON, `schema/report.schema.json`, golden snapshot, verify enforces the freeze (a mutation goes red)
 - [x] v1.0.0 — write path: opt-in `ghostauthor sign` (dry-run default, `--commit` to apply, idempotent, conflict refused) with the detection/attestation boundary documented in `docs/attestation.md`
+- [x] v1.1.0 — commit-time signing: repo-level `commit-msg` hook via `install-hook` / `uninstall-hook` (signed at commit time — no amend, no sha rewrite; marker-protected against foreign hooks; `--no-verify` is the documented escape hatch) + `lint-roster` (catch-all / cross-agent-overlap warnings, exit 0) + canonical `signing` identities for the builtin roster
 
 ## Tests
 
-129 tests pin **properties**, not coverage:
+159 tests pin **properties**, not coverage:
 
 - **Reproducibility** — same repo state ⇒ identical report, regardless of input order
 - **Trailer-block semantics** — negative cases: signature in the body, signature followed by prose, CRLF messages, missing email, lowercase keys, continuation lines
@@ -306,6 +334,8 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - **Roster-dir merge** — sorted filename order, cross-file duplicate ids rejected by rule id
 - **Signing identity** — the roster `signing` section is optional; a signing identity that would not read back to its own agent is rejected (`roster-signing-roundtrip`), never repaired
 - **Write path** — dry-run is the default (nothing lands without `--commit`); sign → audit round-trips to the same agent; a second sign is a no-op; another roster agent's signature is refused (`sign-conflict`); an identity that roster precedence would misattribute is refused (`sign-ambiguous`); every error path exits 2 and changes nothing
+- **Commit-msg hook** — a real `git commit` fires the installed hook and the trailer round-trips to the audit; a presigned message keeps exactly one trailer (idempotent); a conflicting commit is **blocked** (non-zero commit-msg exit aborts the commit, nothing lands); `--no-verify` bypasses and the audit shows the unsigned commit; `install-hook` refuses a foreign `commit-msg` (`hook-exists`) and `uninstall-hook` refuses one it did not install (`hook-not-ours`); the generated script pins its own interpreter, PYTHONPATH and roster
+- **Roster lint** — a catch-all `name_patterns` entry is warned (`lint-catch-all`), a signing identity that roster precedence would attribute to another agent is warned (`lint-overlap`); warnings are advisory (exit 0, deterministic, byte-stable JSON), a malformed roster is still a hard error (exit 2); the builtin roster lints clean
 - **Schema freeze** — the real `render_json` output validates against `schema/report.schema.json`; the golden snapshot is byte-stable; removed/added keys are rejected by name
 - **SARIF mapping** — byte-stable; findings → results with rule descriptors; a breached gate is an `error`-level result
 - **Framing contract** — the git-output parser is pinned against crafted streams, including rejection of unframed output

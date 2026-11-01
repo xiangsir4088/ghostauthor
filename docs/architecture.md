@@ -24,11 +24,16 @@ be steered by wording will eventually be steered by wording.
 | `engine.py` | normalize → match → sessions → aggregate | any rendering, any file IO |
 | `report.py` | render text / json / markdown / sarif | any recomputation |
 | `cli.py` | argparse + file IO + exit codes | any logic |
+| `signer.py` | the ONLY mutator: sign HEAD (`--amend`) or a commit message file (hook); install / remove the opt-in repo-level `commit-msg` hook | any rendering; touching a commit other than the one being signed; overwriting or removing a foreign hook; writing anything but the target message / hook file |
+| `lint.py` | static roster lint: warnings only (catch-all, overlap), deterministic | rejecting input (that is `roster.py`'s job), any IO |
 | `mcp_server.py` | read-only stdio JSON-RPC | network, writes, execution |
 | `web.py` | read-only HTTP transport (stdlib `http.server`) + routing | any judgment, matching, recomputation |
 
 Data flows one way: `git → gitparse → engine → report → cli/mcp/web`.
-Nothing downstream recomputes what upstream decided.
+Nothing downstream recomputes what upstream decided. The write path is
+the deliberate exception: `signer.py` reuses `roster.match` (the same
+precedence the audit uses — that is what makes round-trip hold) but never
+feeds the read pipeline.
 
 ## Invariants (the parts that keep the tool honest for years)
 
@@ -92,3 +97,8 @@ gate is still a 200, because a breach is a verdict, not a failure. It binds
 - No signed-claim semantics. A human can add a trailer by hand; that is an
   attestation problem, not a detection problem. The report tells you what
   is signed, and the git history tells you when.
+- No default hooks, and no global hooks. The v1.1 `commit-msg` hook
+  exists only after an explicit `install-hook`, only in that one
+  repository's `.git/hooks/`, and is removable at any time. No
+  `init.templateDir`, no global config — a repository's default behavior
+  is never changed by this tool.

@@ -644,6 +644,177 @@ def main() -> int:
     step("write path (v1.0): round-trip / idempotency / conflict / "
          "default-off", write_path_ok)
 
+    # 20. commit-msg hook (v1.1): install / sign-at-commit / idempotent /
+    #     conflict / uninstall + roster lint
+    def hook_lint_ok():
+        import json as _json
+        import os as _os
+
+        hook_tmp = Path(tempfile.mkdtemp(prefix="ghostauthor-hook-"))
+        try:
+            repo = hook_tmp / "repo"
+            repo.mkdir()
+            roster_raw = {
+                "version": 1,
+                "agents": [
+                    {"id": "claude", "display_name": "Claude (Anthropic)",
+                     "name_patterns": ["^Claude\\b"],
+                     "email_domains": ["anthropic.com"],
+                     "signing": {"name": "Claude",
+                                 "email": "noreply@anthropic.com"}},
+                    {"id": "codex", "display_name": "Codex (OpenAI)",
+                     "name_patterns": ["^OpenAI Codex\\b"],
+                     "email_domains": ["openai.com"],
+                     "signing": {"name": "OpenAI Codex",
+                                 "email": "noreply@openai.com"}},
+                    {"id": "plain", "display_name": "Plain",
+                     "name_patterns": ["^Plain\\b"], "email_domains": []},
+                ],
+            }
+            roster_file = hook_tmp / "roster.json"
+            roster_file.write_text(_json.dumps(roster_raw), encoding="utf-8")
+            # legal-but-fragile roster for lint: catch-all `wild` first in
+            # file order shadows claude's signing identity
+            wild_roster = hook_tmp / "roster-wild.json"
+            wild_roster.write_text(_json.dumps({
+                "version": 1,
+                "agents": [
+                    {"id": "wild", "display_name": "Wild",
+                     "name_patterns": [".*"], "email_domains": [],
+                     "signing": {"name": "Wild",
+                                 "email": "wild@wild.example"}},
+                    roster_raw["agents"][0],
+                ],
+            }), encoding="utf-8")
+
+            env = dict(_os.environ,
+                       GIT_AUTHOR_NAME="Sam Human",
+                       GIT_AUTHOR_EMAIL="sam@example.com",
+                       GIT_COMMITTER_NAME="Sam Human",
+                       GIT_COMMITTER_EMAIL="sam@example.com")
+
+            def g(*args, check_git=True):
+                return subprocess.run(["git", "-C", str(repo), *args],
+                                      check=check_git, env=env,
+                                      capture_output=True, text=True,
+                                      encoding="utf-8")
+
+            g("init", "-b", "main")
+            (repo / "f.txt").write_text("1\n", encoding="utf-8")
+            g("add", "-A")
+            g("commit", "-m", "initial")
+
+            def cli_env(*args):
+                return subprocess.run(
+                    [sys.executable, "-m", "ghostauthor.cli",
+                     *[str(a) for a in args]],
+                    capture_output=True, text=True, encoding="utf-8",
+                    env=env, cwd=str(ROOT))
+
+            def head():
+                return g("rev-parse", "HEAD").stdout.strip()
+
+            def message():
+                return subprocess.run(
+                    ["git", "-C", str(repo), "log", "-1", "--format=%B"],
+                    capture_output=True, text=True, env=env,
+                    encoding="utf-8").stdout
+
+            hook = repo / ".git" / "hooks" / "commit-msg"
+            claude_trailer = "Co-Authored-By: Claude <noreply@anthropic.com>"
+
+            # (a) install: rc 0, marker file, roster pinned
+            p = cli_env("install-hook", repo, "--roster", roster_file,
+                        "--agent", "claude")
+            check("hook_install_rc", p.returncode == 0, p.stderr)
+            check("hook_install_file", hook.is_file())
+            script = hook.read_text(encoding="utf-8")
+            check("hook_install_marker",
+                  "# ghostauthor-hook v1" in script)
+            check("hook_install_pins_roster",
+                  str(roster_file.resolve()) in script)
+
+            # (b) sign at commit time: a real commit, no amend, round-trips
+            (repo / "f.txt").write_text("2\n", encoding="utf-8")
+            g("add", "-A")
+            g("commit", "-m", "feat")
+            check("hook_commit_trailer", claude_trailer in message())
+            audit = cli_env(repo, "--format", "json", "--roster", roster_file)
+            check("hook_audit_rc", audit.returncode == 0, audit.stderr)
+            data = _json.loads(audit.stdout)
+            check("hook_roundtrip_bucket",
+                  data["commits_by_bucket"]["agent"] == 1,
+                  f"buckets={data['commits_by_bucket']}")
+            check("hook_roundtrip_agent",
+                  bool(data["agents"]) and data["agents"][0]["id"] == "claude")
+
+            # (c) idempotency: a presigned message keeps exactly one trailer
+            (repo / "f.txt").write_text("3\n", encoding="utf-8")
+            g("add", "-A")
+            g("commit", "-m", f"pre\n\n{claude_trailer}")
+            check("hook_idempotent_single",
+                  message().count(claude_trailer) == 1, message())
+
+            # (d) conflict: another roster agent's trailer blocks the commit
+            (repo / "f.txt").write_text("4\n", encoding="utf-8")
+            g("add", "-A")
+            sha = head()
+            p = g("commit", "-m",
+                  "x\n\nCo-Authored-By: OpenAI Codex <noreply@openai.com>",
+                  check_git=False)
+            check("hook_conflict_blocks", p.returncode != 0,
+                  "a commit-msg failure must abort the commit")
+            check("hook_conflict_err", "sign-conflict" in p.stderr, p.stderr)
+            check("hook_conflict_nocommit", head() == sha,
+                  "a blocked commit must not exist")
+
+            # (e) the documented escape hatch: --no-verify bypasses, and the
+            #     resulting unsigned commit stays visible to the audit
+            (repo / "f.txt").write_text("5\n", encoding="utf-8")
+            g("add", "-A")
+            g("commit", "--no-verify", "-m", "bypass")
+            check("hook_no_verify_bypass", claude_trailer not in message())
+
+            # (f) uninstall: ours only, idempotent, foreign hooks protected
+            p = cli_env("uninstall-hook", repo)
+            check("hook_uninstall_rc", p.returncode == 0, p.stderr)
+            check("hook_uninstall_gone", not hook.exists())
+            p = cli_env("uninstall-hook", repo)
+            check("hook_uninstall_idempotent",
+                  p.returncode == 0 and "nothing to remove" in p.stdout,
+                  p.stdout)
+            hook.parent.mkdir(parents=True, exist_ok=True)
+            foreign = b"#!/bin/sh\nexit 0\n"
+            hook.write_bytes(foreign)
+            p = cli_env("install-hook", repo, "--roster", roster_file,
+                        "--agent", "claude")
+            check("hook_foreign_install_refused",
+                  p.returncode == 2 and "hook-exists" in p.stderr, p.stderr)
+            p = cli_env("uninstall-hook", repo)
+            check("hook_foreign_uninstall_refused",
+                  p.returncode == 2 and "hook-not-ours" in p.stderr,
+                  p.stderr)
+            check("hook_foreign_untouched", hook.read_bytes() == foreign)
+
+            # (g) lint: advisory warnings exit 0; clean roster is silent;
+            #     a missing roster is still a hard error (exit 2)
+            p = cli_env("lint-roster", "--roster", wild_roster)
+            check("lint_wild_rc", p.returncode == 0, p.stderr)
+            check("lint_catchall", "lint-catch-all" in p.stdout, p.stdout)
+            check("lint_overlap", "lint-overlap" in p.stdout, p.stdout)
+            p = cli_env("lint-roster", "--roster", roster_file)
+            check("lint_clean",
+                  p.returncode == 0 and "no warnings" in p.stdout, p.stdout)
+            p = cli_env("lint-roster", "--roster", hook_tmp / "missing.json")
+            check("lint_bad_roster_rc2",
+                  p.returncode == 2 and "roster-file-missing" in p.stderr,
+                  p.stderr)
+        finally:
+            shutil.rmtree(hook_tmp, ignore_errors=True)
+
+    step("hook (v1.1): install / sign-at-commit / idempotent / conflict / "
+         "uninstall + roster lint", hook_lint_ok)
+
     print("=" * 44)
     if SKIPPED:
         print(f"skipped ({len(SKIPPED)}): " + ", ".join(SKIPPED))
