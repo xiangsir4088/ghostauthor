@@ -55,12 +55,15 @@ def build_evidence(commits: List[CommitInfo], roster: Roster) -> List[Dict]:
 
 
 def evidence_payload(commits: List[CommitInfo], roster: Roster) -> Dict:
-    """The JSON document (shape: provisional in v1.2, frozen in v1.3)."""
+    """The JSON document. Frozen in v1.3 as schema_version 1 (see
+    schema/evidence.schema.json): additive key additions keep version 1;
+    rename / delete / retype / semantic change bumps it."""
     return {
         "agents_in_roster": len(roster.agents),
         "commits": len(commits),
         "evidences": build_evidence(commits, roster),
         "roster_source": roster.source,
+        "schema_version": "1",
     }
 
 

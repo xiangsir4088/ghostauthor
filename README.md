@@ -32,7 +32,9 @@ audit artifact: reproducible, traceable, appealable.
 ## 60-second start
 
 ```bash
-pip install git+https://atomgit.com/xiangsir/ghostauthor.git
+pip install ghostauthor
+# (PyPI, v1.3+; always-latest alternative:
+#  pip install git+https://atomgit.com/xiangsir/ghostauthor.git)
 ghostauthor /path/to/your/repo
 ghostauthor /path/to/your/repo --format json --max-ai-ratio 0.5
 ghostauthor /path/to/your/repo --since 2026-07-01 --until 2026-10-01
@@ -85,7 +87,8 @@ ghostauthor evidence /path/to/repo <sha>
 # commit the way it did — the same attribution code as the audit, so the
 # two can never disagree
 ghostauthor evidence /path/to/repo <sha> --format json
-# machine-readable; the JSON shape is provisional in v1.2, frozen in v1.3
+# machine-readable; the JSON contract is frozen (schema_version 1,
+# schema/evidence.schema.json — the same additive/bump policy as the report)
 ghostauthor evidence /path/to/repo --bundle out/bundle
 # a reproducible evidence package: report.json (frozen schema) +
 # evidence.json + the exact roster used + manifest.txt with sha256s — no
@@ -318,6 +321,10 @@ box; yours is probably not on it:
   never for merge order to hide.
 - Bring a test: `tests/test_roster.py` is the validator's own spec.
 
+The full writing guide — matching semantics (first-match-wins, prefix
+matches, explicit anchors), every validation rule id, lint rules and
+best practice — is [docs/roster.md](docs/roster.md).
+
 For code contributions, read `docs/architecture.md` first — each module has
 things it is forbidden to do (the engine does no rendering, the report does
 no recomputation, the MCP server does no execution). Keep it that way.
@@ -337,6 +344,7 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - [x] v1.0.0 — write path: opt-in `ghostauthor sign` (dry-run default, `--commit` to apply, idempotent, conflict refused) with the detection/attestation boundary documented in `docs/attestation.md`
 - [x] v1.1.0 — commit-time signing: repo-level `commit-msg` hook via `install-hook` / `uninstall-hook` (signed at commit time — no amend, no sha rewrite; marker-protected against foreign hooks; `--no-verify` is the documented escape hatch) + `lint-roster` (catch-all / cross-agent-overlap warnings, exit 0) + canonical `signing` identities for the builtin roster
 - [x] v1.2.0 — per-commit `evidence` (which roster rule matched each trailer and why — the same attribution code as the audit, so the two can never disagree) + `--bundle` reproducible evidence package (report + evidence + roster snapshot + sha256 manifest, no timestamps) + `roster.match_detail` (reason-carrying match)
+- [x] v1.3.0 — installable from PyPI (`pip install ghostauthor`; OIDC trusted publishing, no token in the repo) + the evidence JSON contract frozen (`schema/evidence.schema.json`, enforced by verify — a mutation goes red) + `docs/roster.md` (writing guide) + `README.zh.md`
 
 ## Tests
 
@@ -355,6 +363,7 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - **Commit-msg hook** — a real `git commit` fires the installed hook and the trailer round-trips to the audit; a presigned message keeps exactly one trailer (idempotent); a conflicting commit is **blocked** (non-zero commit-msg exit aborts the commit, nothing lands); `--no-verify` bypasses and the audit shows the unsigned commit; `install-hook` refuses a foreign `commit-msg` (`hook-exists`) and `uninstall-hook` refuses one it did not install (`hook-not-ours`); the generated script pins its own interpreter, PYTHONPATH and roster
 - **Roster lint** — a catch-all `name_patterns` entry is warned (`lint-catch-all`), a signing identity that roster precedence would attribute to another agent is warned (`lint-overlap`); warnings are advisory (exit 0, deterministic, byte-stable JSON), a malformed roster is still a hard error (exit 2); the builtin roster lints clean
 - **Evidence** — for every commit, the evidence's attribution equals the audit's bucket (they are the same code); a matched trailer names the exact roster selector (`match_detail` agrees with `match`); the JSON is byte-stable; an unknown SHA exits 2 (`sha-unknown`); a `--bundle` is reproducible (same state + path ⇒ same bytes), its `report.json` equals the audit's report, its manifest sha256s match the files on disk, and writing into an existing directory is refused (`bundle-exists`)
+- **Evidence freeze** — the real `evidence --format json` output validates against `schema/evidence.schema.json`; the bundle's `evidence.json` is the same bytes; a removed key, an added key and a bogus attribution are each rejected by name
 - **Schema freeze** — the real `render_json` output validates against `schema/report.schema.json`; the golden snapshot is byte-stable; removed/added keys are rejected by name
 - **SARIF mapping** — byte-stable; findings → results with rule descriptors; a breached gate is an `error`-level result
 - **Framing contract** — the git-output parser is pinned against crafted streams, including rejection of unframed output
@@ -370,7 +379,8 @@ web server, byte-stable vs the CLI → two-branch diff + cross-tab → CI
 assets → schema freeze, enforced → write path: round-trip / idempotency /
 conflict / default-off → hook: install / sign-at-commit / idempotent /
 conflict / uninstall + roster lint → evidence: audit agreement / byte
-stability / reproducible bundle), and prints anything it skips and why:
+stability / reproducible bundle → evidence freeze, enforced), and
+prints anything it skips and why:
 
 ```bash
 python verify.py

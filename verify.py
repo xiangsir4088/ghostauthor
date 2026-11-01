@@ -926,6 +926,85 @@ def main() -> int:
     step("evidence (v1.2): audit agreement / byte stability / "
          "reproducible bundle", evidence_ok)
 
+    # 22. evidence schema freeze (v1.3): evidence.schema.json is valid,
+    #     the real CLI output AND the bundle's evidence.json validate
+    #     against it, and the freeze is ENFORCED — the same discipline
+    #     as the report schema.
+    def evidence_freeze_ok():
+        import copy as _copy
+        import json as _json
+        import os as _os
+        from tests.schemacheck import load_schema, schema_meta_errors, validate
+
+        ev_schema_file = ROOT / "schema" / "evidence.schema.json"
+        check("evf_schema_file_exists", ev_schema_file.exists(),
+              "schema/evidence.schema.json missing")
+        schema = load_schema(ev_schema_file)
+        meta = schema_meta_errors(schema)
+        check("evf_schema_meta", not meta, f"{meta[:3]}")
+        check("evf_schema_pins_keys",
+              set(schema["required"]) == set(schema["properties"]),
+              f"keys={sorted(schema['required'])}")
+
+        env = dict(_os.environ,
+                   GIT_AUTHOR_NAME="Audit",
+                   GIT_AUTHOR_EMAIL="audit@example.com",
+                   GIT_COMMITTER_NAME="Audit",
+                   GIT_COMMITTER_EMAIL="audit@example.com")
+
+        def cli(*args):
+            return subprocess.run(
+                [sys.executable, "-m", "ghostauthor.cli",
+                 *[str(a) for a in args]],
+                capture_output=True, text=True, encoding="utf-8",
+                env=env, cwd=str(ROOT))
+
+        ev_repo = Path(tempfile.mkdtemp(prefix="ghostauthor-evf-"))
+        try:
+            mixed = build_mixed(ev_repo)
+            p = cli("evidence", mixed, "--format", "json")
+            check("evf_cli_exit", p.returncode == 0, p.stderr)
+            data = _json.loads(p.stdout)
+            errs = validate(data, schema)
+            check("evf_cli_output", not errs, f"{errs[:3]}")
+            check("evf_cli_schema_version",
+                  data.get("schema_version") == "1")
+
+            # the bundle's evidence.json is the same contract, same bytes
+            # (the clean json run above: bundle stdout carries a banner
+            # line, so compare against that run, not the bundle run)
+            bundle = ev_repo / "bundle"
+            p2 = cli("evidence", mixed, "--bundle", bundle, "--format", "json")
+            check("evf_bundle_exit", p2.returncode == 0, p2.stderr)
+            bdata = _json.loads(
+                (bundle / "evidence.json").read_text(encoding="utf-8"))
+            errs = validate(bdata, schema)
+            check("evf_bundle_output", not errs, f"{errs[:3]}")
+            check("evf_bundle_matches_cli",
+                  (bundle / "evidence.json").read_bytes()
+                  == p.stdout.encode("utf-8"),
+                  "bundle evidence.json must equal the CLI's bytes")
+
+            # the freeze is enforced: mutations rejected by name
+            broken = _copy.deepcopy(data)
+            del broken["evidences"]
+            check("evf_rejects_removed_key",
+                  any("evidences" in e for e in validate(broken, schema)))
+            broken = _copy.deepcopy(data)
+            broken["bogus"] = 1
+            check("evf_rejects_added_key",
+                  any("bogus" in e for e in validate(broken, schema)))
+            broken = _copy.deepcopy(data)
+            broken["evidences"][0]["attribution"] = "probably-agent"
+            check("evf_rejects_bad_attribution",
+                  any("attribution" in e
+                      for e in validate(broken, schema)))
+        finally:
+            shutil.rmtree(ev_repo, ignore_errors=True)
+
+    step("evidence freeze (v1.3): schema valid / real output validates / "
+         "mutations rejected", evidence_freeze_ok)
+
     print("=" * 44)
     if SKIPPED:
         print(f"skipped ({len(SKIPPED)}): " + ", ".join(SKIPPED))

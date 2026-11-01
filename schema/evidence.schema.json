@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atomgit.com/xiangsir/ghostauthor/schema/evidence.schema.json",
+  "title": "ghostauthor per-commit evidence — schema_version 1",
+  "description": "Frozen output contract of `ghostauthor evidence --format json` (and the `--bundle` evidence.json). Emitted by the same attribution code as the audit report (engine.attribute_commit), so the two cannot disagree about a commit. Compatibility policy mirrors the report schema: additive key additions keep schema_version 1; rename / delete / retype / semantic change bumps it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "agents_in_roster",
+    "commits",
+    "evidences",
+    "roster_source",
+    "schema_version"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1"]
+    },
+    "roster_source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agents_in_roster": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "commits": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "evidences": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agents",
+          "attribution",
+          "authored_at",
+          "author",
+          "sha",
+          "subject",
+          "trailers"
+        ],
+        "properties": {
+          "sha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "author": {
+            "type": "string",
+            "minLength": 1
+          },
+          "authored_at": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "attribution": {
+            "type": "string",
+            "enum": ["agent", "cosigned", "unsigned"]
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "trailers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "agent",
+                "email",
+                "match_reason",
+                "name",
+                "raw"
+              ],
+              "properties": {
+                "raw": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "name": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": "string"
+                },
+                "agent": {
+                  "type": ["string", "null"]
+                },
+                "match_reason": {
+                  "type": ["string", "null"]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

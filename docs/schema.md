@@ -141,3 +141,25 @@ One tool, `repo_authorship_report`, stdio JSON-RPC 2.0
 4. **Same repo state ⇒ same report** — ordered by `(authored_at, sha)`,
    `sort_keys` JSON, byte-stable.
 5. **Boundary semantics pinned by tests.**
+
+## The second frozen contract: the evidence JSON (v1.3)
+
+`ghostauthor evidence --format json` (and the `--bundle` `evidence.json`)
+is pinned by `schema/evidence.schema.json` with the same discipline:
+`schema_version` `"1"`, five root keys (`schema_version`,
+`roster_source`, `agents_in_roster`, `commits`, `evidences`),
+`additionalProperties: false`, the same additive/bump compatibility
+policy (additive ⇒ minor, bump `schema_version` ⇒ breaking).
+
+Enforced by `verify.py` step 22, on every run: the schema is valid
+within the frozen keyword subset; the real CLI output AND the bundle's
+`evidence.json` validate; the bundle's file equals the CLI's bytes; and
+mutations (removed key, added key, bogus `attribution` value) are
+**rejected by name** — a freeze that cannot go red is a slogan.
+
+The evidence document is emitted by the same attribution code as the
+report (`engine.attribute_commit`) — the two frozen contracts therefore
+cannot disagree about a commit. There is deliberately **no golden
+snapshot** for the evidence JSON: the payload carries the roster source
+path as the user gave it, and a golden would pin the auditor's
+filesystem layout.
