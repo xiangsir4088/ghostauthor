@@ -17,6 +17,12 @@ v1.1 subcommands, same discipline:
     overlap); exit 0 with or without warnings
   _commit-msg-hook — INTERNAL: what the installed hook execs; do not
     call directly (it is the hook's argv, pinned by install-hook)
+
+v1.2 subcommands, read side (advice, safe unsupervised):
+  evidence — per-commit evidence: which roster rule matched each trailer
+    and why the audit attributed the commit the way it did (same
+    attribution code as the audit); optional --bundle writes a
+    reproducible evidence package (report + evidence + roster + manifest)
 """
 from __future__ import annotations
 
@@ -28,7 +34,9 @@ from typing import List, Optional, Tuple
 
 from . import __version__
 from .engine import DEFAULT_SESSION_GAP_MINUTES, build_report
-from .gitparse import GitError, iter_commits
+from .evidence import (build_bundle, render_evidence_json,
+                       render_evidence_text)
+from .gitparse import GitError, get_commit, iter_commits
 from .lint import lint_roster
 from .models import parse_window_value
 from .report import render_json, render_markdown, render_sarif, render_text
@@ -308,6 +316,154 @@ def lint_roster_main(argv: Optional[List[str]] = None) -> int:
     return 0
 
 
+def _build_evidence_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="ghostauthor evidence",
+        description="Per-commit evidence: which roster rule matched each "
+                    "trailer and why the audit attributed the commit the "
+                    "way it did. Same attribution code as the audit — "
+                    "they can never disagree. The JSON shape is "
+                    "provisional in v1.2 (frozen in v1.3).")
+    p.add_argument("path", nargs="?", default=".",
+                   help="repository path (default: current directory)")
+    p.add_argument("shas", nargs="*", metavar="SHA",
+                   help="commits to produce evidence for (default: every "
+                        "commit in scope; order preserved)")
+    scope = p.add_mutually_exclusive_group()
+    scope.add_argument("--all", action="store_true",
+                       help="scope: all refs instead of HEAD (ignored "
+                            "when SHAs are given)")
+    scope.add_argument("--ref", metavar="REF",
+                       help="scope: one ref instead of HEAD (ignored "
+                            "when SHAs are given)")
+    p.add_argument("--base", metavar="REF",
+                   help="scope: git range REF..target (mutually exclusive "
+                        "with --all; ignored when SHAs are given)")
+    p.add_argument("--since", metavar="BOUND",
+                   help="window bound, same semantics as the audit "
+                        "(inclusive)")
+    p.add_argument("--until", metavar="BOUND",
+                   help="window bound, same semantics as the audit "
+                        "(exclusive)")
+    p.add_argument("--roster",
+                   help="path to a custom roster JSON (default: builtin)")
+    p.add_argument("--roster-dir",
+                   help="directory of roster JSON files to merge (sorted "
+                        "filename order; mutually exclusive with --roster)")
+    p.add_argument("--format", choices=["text", "json"], default="text",
+                   dest="fmt", help="output format (default: text)")
+    p.add_argument("--bundle", metavar="DIR",
+                   help="also write a reproducible evidence bundle into "
+                        "DIR (report.json + evidence.json + roster/ + "
+                        "manifest.txt); DIR must not exist yet")
+    p.add_argument("--version", action="version",
+                   version=f"ghostauthor {__version__}")
+    return p
+
+
+def evidence_main(argv: Optional[List[str]] = None) -> int:
+    args = _build_evidence_parser().parse_args(argv)
+    roster, error = _load_roster(args)
+    if error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    assert roster is not None
+
+    try:
+        since = (_parse_window_value(args.since)
+                 if args.since is not None else None)
+        until = (_parse_window_value(args.until)
+                 if args.until is not None else None)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        if args.shas:
+            commits = [get_commit(args.path, s) for s in args.shas]
+        else:
+            commits = iter_commits(args.path, all_refs=args.all,
+                                   ref=args.ref, base=args.base)
+    except (GitError, ValueError) as exc:
+        # GitError covers sha-unknown (an explicit SHA the repo does not
+        # hold) exactly like the audit covers an unknown ref: usage error,
+        # exit 2, nothing written.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    # Window: since INCLUSIVE, until EXCLUSIVE — the same boundary
+    # semantics as the audit, so evidence and audit cannot disagree about
+    # which commits a window selects.
+    if since is not None or until is not None:
+        windowed = [c for c in commits
+                    if (since is None or c.authored_at >= since)
+                    and (until is None or c.authored_at < until)]
+        if not windowed:
+            print("error: window-empty: no commits within the window",
+                  file=sys.stderr)
+            return 2
+        commits = windowed
+    if not args.shas:
+        # Scan order: deterministic (authored_at, sha), like the report.
+        # Explicit SHAs keep input order: the auditor asks, the tool answers.
+        commits = sorted(commits, key=lambda c: (c.authored_at, c.sha))
+
+    if args.bundle is not None:
+        bundle_dir = Path(args.bundle)
+        if bundle_dir.exists():
+            print(f"error: bundle-exists: {bundle_dir} already exists — "
+                  "refusing to overwrite evidence", file=sys.stderr)
+            return 2
+        scope = (f"{args.base}..{args.ref or 'HEAD'}"
+                 if (args.base is not None and not args.shas)
+                 else ("sha-list" if args.shas
+                       else ("all" if args.all else (args.ref or "HEAD"))))
+        try:
+            # report.json = what the audit says about EXACTLY this
+            # selection, through the frozen read-side pipeline.
+            report = build_report(
+                commits, roster,
+                repo_path=str(Path(args.path).resolve()),
+                ref=scope, since=since, until=until)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        if args.roster_dir is not None:
+            roster_files = sorted(Path(args.roster_dir).glob("*.json"))
+        elif args.roster is not None:
+            roster_files = [Path(args.roster)]
+        else:
+            roster_files = [builtin_roster_path()]
+        manifest, files = build_bundle(
+            repo_path=str(args.path),
+            scope=scope,
+            window_desc=("none" if (since is None and until is None)
+                         else f"since={since if since is not None else 'none'},"
+                              f" until={until if until is not None else 'none'}"),
+            commits=commits, roster=roster, roster_files=roster_files,
+            report_json=render_json(report),
+            evidence_json=render_evidence_json(commits, roster))
+        try:
+            bundle_dir.mkdir(parents=True)
+            for rel, data in files.items():
+                dest = bundle_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+            (bundle_dir / "manifest.txt").write_text(manifest,
+                                                     encoding="utf-8")
+        except OSError as exc:
+            print(f"error: bundle-write-failed: {exc}", file=sys.stderr)
+            return 2
+        print(f"evidence bundle written to {bundle_dir}: "
+              + ", ".join(sorted(list(files) + ["manifest.txt"])))
+
+    if args.fmt == "json":
+        sys.stdout.write(render_evidence_json(commits, roster))
+    else:
+        sys.stdout.write(render_evidence_text(commits, roster))
+    return 0
+
+
 def _load_roster(args: argparse.Namespace) -> Tuple[Optional[Roster],
                                                     Optional[str]]:
     """Shared roster loading: (roster, error). Never raises."""
@@ -334,10 +490,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Subcommand dispatch happens before argparse: the audit contract
     # (positional PATH, all flags) is untouched. Note: a repository
     # literally named after a subcommand is shadowed by it — the reserved
-    # names are: sign, _commit-msg-hook, install-hook, uninstall-hook,
-    # lint-roster. Documented; none is a plausible repo name.
+    # names are: sign, evidence, _commit-msg-hook, install-hook,
+    # uninstall-hook, lint-roster. Documented; none is a plausible repo
+    # name.
     if argv and argv[0] == "sign":
         return sign_main(argv[1:])
+    if argv and argv[0] == "evidence":
+        return evidence_main(argv[1:])
     if argv and argv[0] == "_commit-msg-hook":
         return commit_msg_hook_main(argv[1:])
     if argv and argv[0] == "install-hook":

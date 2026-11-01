@@ -14,11 +14,41 @@ from typing import Dict, List, Optional, Tuple
 from .models import (ALL_BUCKETS, BUCKET_AGENT, BUCKET_COSIGNED,
                      BUCKET_UNSIGNED, AgentStats, AuthorStats, CommitInfo,
                      Finding, Report, Session)
-from .roster import Roster
+from .roster import AgentRule, Roster
 
 DEFAULT_SESSION_GAP_MINUTES = 360
 
 _BODY_COAUTH_RE = re.compile(r"^\s*co-authored-by\s*:", re.IGNORECASE)
+
+
+def attribute_commit(c: CommitInfo, roster: Roster
+                     ) -> Tuple[str, List[str],
+                                List[Tuple[Optional[AgentRule], str]]]:
+    """The single source of truth for per-commit attribution.
+
+    Returns (bucket, matched agent ids in first-seen order, per-trailer
+    (rule, reason-or-"")). `build_report` and the evidence command both
+    consume this: the audit's bucket and the per-sha evidence can never
+    disagree about a commit, because they are the same code.
+    """
+    per: List[Tuple[Optional[AgentRule], str]] = []
+    matched_ids: List[str] = []
+    for t in c.trailers:
+        hit = roster.match_detail(t.name, t.email_domain)
+        if hit is None:
+            per.append((None, ""))
+            continue
+        rule, reason = hit
+        per.append((rule, reason))
+        if rule.id not in matched_ids:
+            matched_ids.append(rule.id)
+    if not c.trailers:
+        bucket = BUCKET_UNSIGNED
+    elif matched_ids:
+        bucket = BUCKET_AGENT
+    else:
+        bucket = BUCKET_COSIGNED
+    return bucket, matched_ids, per
 
 
 def build_report(commits: List[CommitInfo],
@@ -63,23 +93,15 @@ def build_report(commits: List[CommitInfo],
     cosigned_evidence: List[str] = []
 
     for c in ordered:
-        matched_ids: List[str] = []
-        for t in c.trailers:
-            rule = roster.match(t.name, t.email_domain)
-            if rule is not None and rule.id not in matched_ids:
-                matched_ids.append(rule.id)
+        bucket, matched_ids, per = attribute_commit(c, roster)
+        for t, (rule, _reason) in zip(c.trailers, per):
             if rule is not None and not t.email:
                 findings.append(Finding(
                     rule="trailer-no-email", severity="info",
                     evidence=f"{c.sha[:12]}: {t.raw}",
                     detail="matched by name only; trailer carries no <email>"))
 
-        if not c.trailers:
-            bucket = BUCKET_UNSIGNED
-        elif matched_ids:
-            bucket = BUCKET_AGENT
-        else:
-            bucket = BUCKET_COSIGNED
+        if bucket == BUCKET_COSIGNED:
             for t in c.trailers:
                 cosigned_evidence.append(f"{c.sha[:12]}: {t.raw}")
                 findings.append(Finding(

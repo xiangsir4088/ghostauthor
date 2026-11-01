@@ -20,9 +20,10 @@ be steered by wording will eventually be steered by wording.
 |---|---|---|
 | `models.py` | data model + bucket constants + shared window-bound parser | any IO, any git call |
 | `roster.py` | load + validate the declarative agent roster | silently "fixing" bad input |
-| `gitparse.py` | git log extraction (HEAD / all refs / one ref), trailer-block parsing | any judgment, any matching |
+| `gitparse.py` | git log extraction (HEAD / all refs / one ref / one sha), trailer-block parsing | any judgment, any matching |
 | `engine.py` | normalize → match → sessions → aggregate | any rendering, any file IO |
 | `report.py` | render text / json / markdown / sarif | any recomputation |
+| `evidence.py` | per-commit evidence entries + bundle assembly (pure: no IO, no wall clock; consumes `engine.attribute_commit`) | any re-attribution (that is `engine`'s job), any rendering of the frozen report (that is `report.py`'s job) |
 | `cli.py` | argparse + file IO + exit codes | any logic |
 | `signer.py` | the ONLY mutator: sign HEAD (`--amend`) or a commit message file (hook); install / remove the opt-in repo-level `commit-msg` hook | any rendering; touching a commit other than the one being signed; overwriting or removing a foreign hook; writing anything but the target message / hook file |
 | `lint.py` | static roster lint: warnings only (catch-all, overlap), deterministic | rejecting input (that is `roster.py`'s job), any IO |

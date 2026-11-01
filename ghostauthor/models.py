@@ -1,4 +1,4 @@
-"""vibemeter data model.
+"""ghostauthor data model.
 
 Pure data: no file IO, no git calls, no rendering, no wall clock.
 Everything downstream consumes these objects; nothing downstream

@@ -43,15 +43,28 @@ class Roster:
     agents: List[AgentRule] = field(default_factory=list)
     source: str = "<builtin>"
 
+    def match_detail(self, name: str, email_domain: str
+                     ) -> Optional[Tuple[AgentRule, str]]:
+        """First matching rule wins, WITH the reason.
+
+        Returns (agent, reason) where reason names the exact selector that
+        matched (the pattern string or the email domain). Roster file order
+        IS the documented precedence — deterministic, no ranking
+        heuristics. `match` is this function projected onto the agent.
+        """
+        for agent in self.agents:
+            for rx in agent.name_patterns:
+                if rx.match(name):
+                    return agent, f"name pattern {rx.pattern!r}"
+            if email_domain and email_domain in agent.email_domains:
+                return agent, f"email domain {email_domain!r}"
+        return None
+
     def match(self, name: str, email_domain: str) -> Optional[AgentRule]:
         """First matching rule wins. Roster file order IS the documented
         precedence — deterministic, no ranking heuristics."""
-        for agent in self.agents:
-            if any(rx.match(name) for rx in agent.name_patterns):
-                return agent
-            if email_domain and email_domain in agent.email_domains:
-                return agent
-        return None
+        hit = self.match_detail(name, email_domain)
+        return hit[0] if hit else None
 
 
 def _fail(rule: str, detail: str) -> RosterError:

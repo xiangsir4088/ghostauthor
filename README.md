@@ -76,6 +76,23 @@ ghostauthor lint-roster --roster my-team.json
 # rejects malformed rosters (exit 2); lint only surfaces fragility
 ```
 
+Drilling into a verdict (v1.2) — per-commit evidence and a reproducible
+bundle:
+
+```bash
+ghostauthor evidence /path/to/repo <sha>
+# which roster rule matched each trailer and why the audit attributed the
+# commit the way it did — the same attribution code as the audit, so the
+# two can never disagree
+ghostauthor evidence /path/to/repo <sha> --format json
+# machine-readable; the JSON shape is provisional in v1.2, frozen in v1.3
+ghostauthor evidence /path/to/repo --bundle out/bundle
+# a reproducible evidence package: report.json (frozen schema) +
+# evidence.json + the exact roster used + manifest.txt with sha256s — no
+# timestamps, so re-running on the same state is byte-identical
+# (canonical UTF-8/LF)
+```
+
 The JSON contract it reads and writes under is frozen: `schema_version` in
 the output, `schema/report.schema.json` as the machine-checkable form,
 `docs/schema.md` as the single source of truth (compatibility policy
@@ -319,10 +336,11 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - [x] v0.5.0 — read-side contract frozen: `schema_version` in the JSON, `schema/report.schema.json`, golden snapshot, verify enforces the freeze (a mutation goes red)
 - [x] v1.0.0 — write path: opt-in `ghostauthor sign` (dry-run default, `--commit` to apply, idempotent, conflict refused) with the detection/attestation boundary documented in `docs/attestation.md`
 - [x] v1.1.0 — commit-time signing: repo-level `commit-msg` hook via `install-hook` / `uninstall-hook` (signed at commit time — no amend, no sha rewrite; marker-protected against foreign hooks; `--no-verify` is the documented escape hatch) + `lint-roster` (catch-all / cross-agent-overlap warnings, exit 0) + canonical `signing` identities for the builtin roster
+- [x] v1.2.0 — per-commit `evidence` (which roster rule matched each trailer and why — the same attribution code as the audit, so the two can never disagree) + `--bundle` reproducible evidence package (report + evidence + roster snapshot + sha256 manifest, no timestamps) + `roster.match_detail` (reason-carrying match)
 
 ## Tests
 
-159 tests pin **properties**, not coverage:
+169 tests pin **properties**, not coverage:
 
 - **Reproducibility** — same repo state ⇒ identical report, regardless of input order
 - **Trailer-block semantics** — negative cases: signature in the body, signature followed by prose, CRLF messages, missing email, lowercase keys, continuation lines
@@ -336,6 +354,7 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - **Write path** — dry-run is the default (nothing lands without `--commit`); sign → audit round-trips to the same agent; a second sign is a no-op; another roster agent's signature is refused (`sign-conflict`); an identity that roster precedence would misattribute is refused (`sign-ambiguous`); every error path exits 2 and changes nothing
 - **Commit-msg hook** — a real `git commit` fires the installed hook and the trailer round-trips to the audit; a presigned message keeps exactly one trailer (idempotent); a conflicting commit is **blocked** (non-zero commit-msg exit aborts the commit, nothing lands); `--no-verify` bypasses and the audit shows the unsigned commit; `install-hook` refuses a foreign `commit-msg` (`hook-exists`) and `uninstall-hook` refuses one it did not install (`hook-not-ours`); the generated script pins its own interpreter, PYTHONPATH and roster
 - **Roster lint** — a catch-all `name_patterns` entry is warned (`lint-catch-all`), a signing identity that roster precedence would attribute to another agent is warned (`lint-overlap`); warnings are advisory (exit 0, deterministic, byte-stable JSON), a malformed roster is still a hard error (exit 2); the builtin roster lints clean
+- **Evidence** — for every commit, the evidence's attribution equals the audit's bucket (they are the same code); a matched trailer names the exact roster selector (`match_detail` agrees with `match`); the JSON is byte-stable; an unknown SHA exits 2 (`sha-unknown`); a `--bundle` is reproducible (same state + path ⇒ same bytes), its `report.json` equals the audit's report, its manifest sha256s match the files on disk, and writing into an existing directory is refused (`bundle-exists`)
 - **Schema freeze** — the real `render_json` output validates against `schema/report.schema.json`; the golden snapshot is byte-stable; removed/added keys are rejected by name
 - **SARIF mapping** — byte-stable; findings → results with rule descriptors; a breached gate is an `error`-level result
 - **Framing contract** — the git-output parser is pinned against crafted streams, including rejection of unframed output
@@ -349,7 +368,9 @@ fixture repos → CLI exit codes → real MCP `initialize`/`tools/list`/
 `tools/call` → rendering → time window → roster-dir merge → SARIF → live
 web server, byte-stable vs the CLI → two-branch diff + cross-tab → CI
 assets → schema freeze, enforced → write path: round-trip / idempotency /
-conflict / default-off), and prints anything it skips and why:
+conflict / default-off → hook: install / sign-at-commit / idempotent /
+conflict / uninstall + roster lint → evidence: audit agreement / byte
+stability / reproducible bundle), and prints anything it skips and why:
 
 ```bash
 python verify.py

@@ -49,7 +49,8 @@ COAUTHOR_KEY = "co-authored-by"
 
 class GitError(RuntimeError):
     """Raised for unusable repositories. `code` is one of:
-    git-missing | not-a-repo | no-commits | git-failed | malformed-output."""
+    git-missing | not-a-repo | no-commits | git-failed | malformed-output
+    | sha-unknown (get_commit: the sha is not a commit in this repo)."""
 
     def __init__(self, code: str, detail: str = ""):
         super().__init__(f"{code}: {detail}" if detail else code)
@@ -233,3 +234,26 @@ def iter_commits(repo_path: str, all_refs: bool = False,
     if not commits:
         raise GitError("no-commits")
     return commits
+
+
+def get_commit(repo_path: str, sha: str) -> CommitInfo:
+    """Extract one commit by sha — any commit object in the object store,
+    not limited to a ref. `sha-unknown` (GitError) when the sha does not
+    name a commit in this repository.
+
+    Uses the exact same framing as `iter_commits`, so a per-sha reading
+    equals what a scan of the same repository state would read: the
+    evidence command and the audit can never see two different versions
+    of the same commit.
+    """
+    proc = subprocess.run(
+        ["git", "-c", "i18n.logOutputEncoding=UTF-8",
+         "-c", "core.quotepath=false", "-C", str(repo_path), "cat-file",
+         "-e", sha + "^{commit}"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise GitError("sha-unknown",
+                       f"{sha[:12]} is not a commit in this repository")
+    out = _run_git(["-C", str(repo_path), "log", "-1", "--numstat",
+                    "--format=" + _LOG_FORMAT, "--no-show-signature", sha])
+    return _parse_log(out)[0]

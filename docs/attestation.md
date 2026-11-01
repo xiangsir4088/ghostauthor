@@ -85,6 +85,9 @@ process:
 **Does** (defenses it can actually hold):
 
 - every number expands to its commit list (the audit trail);
+- per-commit evidence (v1.2): every attribution expands to the exact
+  roster selector that matched — same code as the audit, so the two can
+  never disagree about a commit;
 - the cap invariant: per-agent overlap is documented, deduplicated totals
   never double-count;
 - round-trip: a signature is either readable back to its agent or it was

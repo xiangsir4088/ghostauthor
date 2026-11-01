@@ -815,6 +815,117 @@ def main() -> int:
     step("hook (v1.1): install / sign-at-commit / idempotent / conflict / "
          "uninstall + roster lint", hook_lint_ok)
 
+    # 21. evidence (v1.2): audit agreement / byte stability / reproducible
+    #     bundle
+    def evidence_ok():
+        import hashlib
+        import json as _json
+        import os as _os
+
+        env = dict(_os.environ,
+                   GIT_AUTHOR_NAME="Audit",
+                   GIT_AUTHOR_EMAIL="audit@example.com",
+                   GIT_COMMITTER_NAME="Audit",
+                   GIT_COMMITTER_EMAIL="audit@example.com")
+
+        def cli(*args):
+            return subprocess.run(
+                [sys.executable, "-m", "ghostauthor.cli",
+                 *[str(a) for a in args]],
+                capture_output=True, text=True, encoding="utf-8",
+                env=env, cwd=str(ROOT))
+
+        # The fixture is built INSIDE this step: the main-flow fixtures
+        # are deleted (their try/finally above) before these later steps
+        # run — the same pattern as the write-path step.
+        ev_repo = Path(tempfile.mkdtemp(prefix="ghostauthor-evidrepo-"))
+        try:
+            mixed = build_mixed(ev_repo)
+
+            # (a) load-bearing: for EVERY commit, the evidence's
+            #     attribution equals the audit's bucket — same code
+            audit = cli(mixed, "--format", "json")
+            check("ev_audit_rc", audit.returncode == 0, audit.stderr)
+            a = _json.loads(audit.stdout)
+            bucket_of = {sha: b
+                         for b, shas in a["bucket_commit_shas"].items()
+                         for sha in shas}
+            ev = cli("evidence", mixed, "--format", "json")
+            check("ev_rc", ev.returncode == 0, ev.stderr)
+            e = _json.loads(ev.stdout)
+            check("ev_count", e["commits"] == a["total_commits"],
+                  f"{e['commits']} vs {a['total_commits']}")
+            check("ev_coverage",
+                  {x["sha"] for x in e["evidences"]} == set(bucket_of),
+                  "evidence must cover exactly the audited commits")
+            for entry in e["evidences"]:
+                check(f"ev_agree {entry['sha'][:8]}",
+                      entry["attribution"] == bucket_of.get(entry["sha"]),
+                      f"evidence={entry['attribution']} "
+                      f"audit={bucket_of.get(entry['sha'])}")
+                for t in entry["trailers"]:
+                    if t["agent"] is not None:
+                        check(f"ev_reason {entry['sha'][:8]}",
+                              bool(t["match_reason"]),
+                              "a match must name its selector")
+
+            # (b) byte-stable: two runs, same bytes
+            ev2 = cli("evidence", mixed, "--format", "json")
+            check("ev_stable", ev.stdout == ev2.stdout,
+                  "evidence JSON must be byte-stable")
+
+            # (c) unknown sha: exit 2, nothing written
+            p = cli("evidence", mixed,
+                    "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+            check("ev_sha_unknown",
+                  p.returncode == 2 and "sha-unknown" in p.stderr,
+                  p.stderr)
+
+            # (d) bundle: reproducible (same state + path => same bytes),
+            #     internally consistent (manifest sha256s), report.json
+            #     equals the audit's report, roster snapshot is the
+            #     roster used
+            b1, b2 = ev_repo / "b1", ev_repo / "b2"
+            p = cli("evidence", mixed, "--bundle", b1)
+            check("ev_bundle_rc", p.returncode == 0, p.stderr)
+            p = cli("evidence", mixed, "--bundle", b2)
+            check("ev_bundle_rc2", p.returncode == 0, p.stderr)
+            for name in ("report.json", "evidence.json", "manifest.txt",
+                         "roster/agents.json"):
+                f1, f2 = b1 / name, b2 / name
+                check(f"ev_bundle_exists {name}",
+                      f1.is_file() and f2.is_file())
+                check(f"ev_bundle_repro {name}",
+                      f1.read_bytes() == f2.read_bytes(),
+                      "same state + same path => same bytes")
+            # subprocess text reading is newline-normalized, so encoding
+            # the audit's stdout is a canonical-LF byte comparison
+            check("ev_bundle_report",
+                  (b1 / "report.json").read_bytes()
+                  == audit.stdout.encode("utf-8"),
+                  "bundle report.json must equal the audit's report bytes")
+            manifest = (b1 / "manifest.txt").read_text(encoding="utf-8")
+            for name in ("report.json", "evidence.json",
+                         "roster/agents.json"):
+                digest = hashlib.sha256(
+                    (b1 / name).read_bytes()).hexdigest()
+                check(f"ev_manifest {name}",
+                      f"  {name}  {digest}" in manifest, manifest)
+            check("ev_roster_snapshot",
+                  (b1 / "roster" / "agents.json").read_bytes()
+                  == (ROOT / "ghostauthor" / "roster" / "agents.json"
+                      ).read_bytes(),
+                  "the bundle must ship the roster that was used")
+            p = cli("evidence", mixed, "--bundle", b1)
+            check("ev_bundle_exists_err",
+                  p.returncode == 2 and "bundle-exists" in p.stderr,
+                  p.stderr)
+        finally:
+            shutil.rmtree(ev_repo, ignore_errors=True)
+
+    step("evidence (v1.2): audit agreement / byte stability / "
+         "reproducible bundle", evidence_ok)
+
     print("=" * 44)
     if SKIPPED:
         print(f"skipped ({len(SKIPPED)}): " + ", ".join(SKIPPED))
