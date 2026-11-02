@@ -11,12 +11,11 @@ requires-python = ">=3.9"
 license = { text = "MIT" }
 keywords = ["ai", "provenance", "git", "audit", "mcp", "ci", "attribution"]
 authors = [{ name = "xiangsir" }]
-urls = {
-    "Homepage" = "https://github.com/xiangsir4088/ghostauthor",
-    "Repository" = "https://github.com/xiangsir4088/ghostauthor",
-    "Releases" = "https://github.com/xiangsir4088/ghostauthor/releases",
-    "Mirror (AtomGit)" = "https://atomgit.com/xiangsir/ghostauthor",
-}
+[project.urls]
+Homepage = "https://github.com/xiangsir4088/ghostauthor"
+Repository = "https://github.com/xiangsir4088/ghostauthor"
+Releases = "https://github.com/xiangsir4088/ghostauthor/releases"
+"Mirror (AtomGit)" = "https://atomgit.com/xiangsir/ghostauthor"
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
