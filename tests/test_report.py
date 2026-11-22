@@ -9,8 +9,8 @@ import unittest
 from ghostauthor.engine import build_report
 from ghostauthor.gitparse import parse_trailer_block
 from ghostauthor.models import CommitInfo
-from ghostauthor.report import (render_json, render_markdown, render_sarif,
-                                render_text)
+from ghostauthor.report import (render_html, render_json, render_markdown,
+                                render_sarif, render_text)
 from ghostauthor.roster import validate_roster
 
 ROSTER = validate_roster({
@@ -116,6 +116,45 @@ class ReportRenderingTests(unittest.TestCase):
         loc = by_rule["cosigned-unknown"]["locations"][0]["logicalLocations"][0]
         self.assertEqual(loc["kind"], "commit")
         self.assertTrue(loc["name"].startswith("b"))
+
+    # ---- HTML brief: admissible evidence, not a screenshot ----
+
+    def test_html_is_byte_stable(self):
+        """No timestamp, no ordering nondeterminism: same state, same bytes."""
+        self.assertEqual(render_html(make_report()), render_html(make_report()))
+
+    def test_html_is_self_contained(self):
+        doc = render_html(make_report())
+        self.assertNotIn("<script", doc)
+        self.assertNotIn("http://", doc)
+        self.assertNotIn("https://", doc)
+        self.assertNotIn("<link", doc)
+        self.assertIn("<!DOCTYPE html>", doc)
+
+    def test_html_states_the_method_and_the_prohibition(self):
+        doc = render_html(make_report())
+        self.assertIn("no LLM, no network, no style classifier", doc)
+        self.assertIn("no generation", doc)
+        self.assertIn("Unsigned &ne; human", doc)
+
+    def test_html_escapes_the_title(self):
+        doc = render_html(make_report(),
+                          title='<script>alert("x")</script>')
+        self.assertNotIn("<script>", doc)
+        self.assertIn("&lt;script&gt;", doc)
+
+    def test_html_escapes_repository_path(self):
+        report = make_report()
+        report.repo_path = '/tmp/<img src=x onerror="alert(1)">'
+        doc = render_html(report)
+        self.assertNotIn("<img", doc)
+        self.assertIn("&lt;img", doc)
+
+    def test_html_carries_the_measured_numbers(self):
+        doc = render_html(make_report())
+        self.assertIn("100.0%", doc)
+        self.assertIn("Claude (Anthropic)", doc)
+        self.assertIn("h@x.io", doc)
 
 
 if __name__ == "__main__":

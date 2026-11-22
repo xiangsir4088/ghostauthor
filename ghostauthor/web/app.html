@@ -177,6 +177,16 @@ details.raw summary::-webkit-details-marker{display:none}
 details.raw summary::before{content:"▸ ";color:var(--brand)}
 details.raw[open] summary::before{content:"▾ "}
 .rawbar{display:flex;gap:8px;margin:10px 0 8px}
+.covhint{margin-top:14px;border:1px solid #e8d9b6;background:#fdf8ec;
+border-left:3px solid #b1740f;border-radius:6px;padding:12px 14px}
+.covhint .ch-t{font-weight:650;font-size:13px;margin-bottom:4px}
+.covhint .ch-b{font-size:12.5px;color:#5b636e;line-height:1.55}
+.covhint .ch-out{margin-top:10px;font-size:12.5px}
+.covhint .ch-out ol{margin:8px 0 0;padding-left:20px}
+.covhint .ch-out li{margin-bottom:8px;line-height:1.5}
+.covhint .ch-out code{background:#f0ece0;border-radius:3px;padding:1px 4px;
+font-size:11.5px}
+.covhint .ch-k{margin-bottom:6px}
 .mini{background:var(--panel2);border:1px solid var(--border);color:var(--muted);
   font-size:12px;padding:5px 10px}
 .mini:hover{color:var(--brand);border-color:var(--brand)}
@@ -384,6 +394,67 @@ function esc(s){
 }
 function pct(n, total){ return total ? (n/total*100).toFixed(1)+'%' : '0.0%'; }
 function fmtPct(r){ return (r*100).toFixed(1)+'%'; }
+
+// A low ratio is the moment a first-time user gives up. Offer the diagnosis
+// inline instead of letting a correct-but-empty ledger read as a broken tool.
+function coverageHint(r){
+  const rep = r.report || {};
+  const total = rep.total_commits || 0;
+  const signed = (rep.commits_by_bucket || {}).agent || 0;
+  if (!total || signed / total >= 0.2) return '';
+  return '<div class="covhint">'
+    + '<div class="ch-t">Only ' + signed + ' of ' + total + ' commits carry a recognized signature</div>'
+    + '<div class="ch-b">The ledger may be empty for a fixable reason. The diagnosis separates '
+    + 'a signature the roster does not know (a data fix) from one that was never written '
+    + '(a write-path fix). It never guesses an attribution.</div>'
+    + '<div class="ch-out" hidden></div>'
+    + '<button class="mini" type="button" data-cov style="margin-top:8px">Run diagnosis</button>'
+    + '</div>';
+}
+
+async function runCoverage(article, path, ref){
+  const box = article.querySelector('.covhint .ch-out');
+  const btn = article.querySelector('[data-cov]');
+  if (!box || !btn) return;
+  btn.disabled = true;
+  box.hidden = false;
+  box.textContent = 'diagnosing…';
+  try {
+    const body = {path: path};
+    if (ref && ref !== 'HEAD') body.ref = ref;
+    const resp = await fetch('/api/coverage', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      box.textContent = (data.error && (data.error.code + ': ' + data.error.detail)) || 'diagnosis failed';
+      return;
+    }
+    const c = JSON.parse(data.coverage);
+    let html = '<div class="ch-k"><b>' + fmtPct(c.coverage_ratio) + '</b> signed · adoption <b>'
+      + esc(c.adoption) + '</b> · ' + c.total_commits + ' commits</div>';
+    (c.unmatched_trailers || []).slice(0, 3).forEach(function(u){
+      html += '<div>unrecognized signature × ' + u.commits + ': <code>' + esc(u.trailer) + '</code></div>';
+    });
+    (c.signals || []).slice(0, 3).forEach(function(s){
+      html += '<div>unsigned but marked by ' + esc(s.label) + ' × ' + s.commits + ': <code>'
+        + esc(s.example) + '</code></div>';
+    });
+    if ((c.actions || []).length) {
+      html += '<ol>' + c.actions.map(function(a){
+        return '<li><code>' + esc(a.code) + '</code> ' + esc(a.detail)
+          + (a.command ? '<br><code>$ ' + esc(a.command) + '</code>' : '') + '</li>';
+      }).join('') + '</ol>';
+    }
+    box.innerHTML = html;
+  } catch (e) {
+    box.textContent = String(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
 function fmtTs(ts){
   if (ts === null || ts === undefined) return '—';
   return new Date(ts*1000).toISOString().replace('T',' ').slice(0,16) + 'Z';
@@ -547,6 +618,7 @@ function renderReport(r){
     + '<span><i class="dot cosigned"></i>cosigned ' + b.cosigned + ' (' + pct(b.cosigned, total) + ')</span>'
     + '<span><i class="dot unsigned"></i>unsigned ' + b.unsigned + ' (' + pct(b.unsigned, total) + ')</span>'
     + '</div>'
+    + coverageHint(r)
     + renderBucketLists(rep)
     + '<div class="subhead">agents</div>' + agents
     + '<div class="subhead">sessions</div>' + sess
@@ -557,6 +629,8 @@ function renderReport(r){
     + '<pre class="mono">' + esc(rawJson) + '</pre></details>';
 
   const dlName = 'ghostauthor-' + String(r.ref||'report').replace(/[^a-z0-9_-]+/gi,'_') + '.json';
+  const covBtn = p.querySelector('[data-cov]');
+  if (covBtn) covBtn.addEventListener('click', function(){ runCoverage(p, r.path, r.ref); });
   p.querySelector('[data-copy]').addEventListener('click', function(){
     if (navigator.clipboard) navigator.clipboard.writeText(rawJson);
   });

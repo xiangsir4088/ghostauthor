@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atomgit.com/xiangsir/ghostauthor/schema/portfolio.schema.json",
+  "title": "ghostauthor portfolio aggregate (schema_version 1)",
+  "description": "The frozen shape of `ghostauthor portfolio --format json`. Additive changes keep schema_version 1; a rename, deletion, retype or semantic change bumps it. The aggregate ratio is weighted by commit (sum of agent commits / sum of commits); mean_repo_ratio is reported next to it and is never a substitute.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "root",
+    "window",
+    "totals",
+    "repositories",
+    "by_agent",
+    "errors"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1"]
+    },
+    "root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "window": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["since", "until"],
+      "properties": {
+        "since": {"type": ["integer", "null"]},
+        "until": {"type": ["integer", "null"]}
+      }
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repositories", "scanned", "failed", "total_commits",
+                   "agent_commits", "ai_ratio", "mean_repo_ratio"],
+      "properties": {
+        "repositories": {"type": "integer", "minimum": 0},
+        "scanned": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "total_commits": {"type": "integer", "minimum": 0},
+        "agent_commits": {"type": "integer", "minimum": 0},
+        "ai_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+        "mean_repo_ratio": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "repositories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "path", "ref", "total_commits",
+                     "agent_commits", "ai_ratio", "top_agents", "agents",
+                     "error"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "minLength": 1},
+          "ref": {"type": "string", "minLength": 1},
+          "total_commits": {"type": "integer", "minimum": 0},
+          "agent_commits": {"type": "integer", "minimum": 0},
+          "ai_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+          "top_agents": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "display_name", "commits"],
+              "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "display_name": {"type": "string", "minLength": 1},
+                "commits": {"type": "integer", "minimum": 1}
+              }
+            }
+          },
+          "error": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "by_agent": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["agent_id", "display_name", "commits", "repos"],
+        "properties": {
+          "agent_id": {"type": "string", "minLength": 1},
+          "display_name": {"type": "string", "minLength": 1},
+          "commits": {"type": "integer", "minimum": 1},
+          "repos": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "error"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "error": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

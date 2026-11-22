@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from examples.make_fixtures import build_agent_heavy, build_mixed  # noqa: E402
-from ghostauthor.web import handle_audit  # noqa: E402
+from ghostauthor.web import handle_audit, handle_coverage  # noqa: E402
 
 MIXED_BASE_TS = 1767225600  # matches make_fixtures.BASE_TS
 
@@ -171,6 +171,66 @@ class WebAPITests(unittest.TestCase):
         st, body = self.audit(session_gap_minutes=0)
         self.assertEqual(st, 400)
         self.assertEqual(body["error"]["code"], "session-gap-invalid")
+
+
+class WebCoverageAPITests(unittest.TestCase):
+    """POST /api/coverage: same bytes as the CLI, same error-code mapping.
+
+    Exercised in-process (the handler is a pure function); the socket layer
+    is covered by verify's web step.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="ghostauthor-webcov-test-"))
+        cls.mixed = build_mixed(cls.tmp)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _cli(self, *args):
+        return subprocess.run(
+            [sys.executable, "-m", "ghostauthor.cli", "coverage",
+             str(self.mixed), *[str(a) for a in args]],
+            capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT))
+
+    def test_byte_identical_to_the_cli(self):
+        st, body = handle_coverage({"path": str(self.mixed)})
+        self.assertEqual(st, 200)
+        self.assertEqual(body["coverage"],
+                         self._cli("--format", "json").stdout)
+        payload = json.loads(body["coverage"])
+        self.assertEqual(payload["schema_version"], "1")
+        self.assertEqual(payload["adoption"], "partial")
+
+    def test_window_is_forwarded(self):
+        since = MIXED_BASE_TS + 5 * 3600
+        st, body = handle_coverage({"path": str(self.mixed),
+                                    "since": str(since)})
+        self.assertEqual(st, 200)
+        self.assertEqual(body["coverage"],
+                         self._cli("--format", "json",
+                                   "--since", str(since)).stdout)
+
+    def test_error_mapping(self):
+        self.assertEqual(handle_coverage({})[0], 400)               # missing-path
+        self.assertEqual(handle_coverage({"path": str(self.mixed),
+                                          "all": True, "ref": "x"})[0], 400)
+        self.assertEqual(handle_coverage({"path": str(self.mixed),
+                                          "ref": "-bad"})[0], 400)
+        self.assertEqual(handle_coverage({"path": str(self.mixed),
+                                          "since": "nope"})[0], 400)
+        self.assertEqual(handle_coverage({"path": str(self.mixed),
+                                          "roster": "a",
+                                          "roster_dir": "b"})[0], 400)
+        self.assertEqual(handle_coverage(
+            {"path": str(self.tmp / "nope")})[0], 404)
+        # a window that excludes everything is a request-level 400, like
+        # the CLI's exit 2 — never an empty report
+        self.assertEqual(handle_coverage({"path": str(self.mixed),
+                                          "since": MIXED_BASE_TS + 10**7})[0],
+                         400)
 
 
 if __name__ == "__main__":

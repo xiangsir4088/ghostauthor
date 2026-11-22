@@ -1,9 +1,13 @@
 """Rendering: consumes a Report, never recomputes anything.
 
-Three formats: terminal text, JSON (sort_keys => byte-stable), markdown.
+Four formats: terminal text, JSON (sort_keys => byte-stable), markdown, and
+a self-contained HTML brief (no CDN, no script, no wall clock — the same
+repository state yields byte-identical HTML, which is what makes it
+admissible as evidence rather than a screenshot).
 """
 from __future__ import annotations
 
+import html
 import json
 from typing import List
 
@@ -273,3 +277,276 @@ def render_markdown(report: Report) -> str:
                "commit lists per bucket, per agent and per session.")
     out.append("")
     return "\n".join(out)
+
+
+HTML_CSS = """
+:root{--ink:#15181d;--muted:#5b636e;--line:#e2e6eb;--bg:#f5f6f8;
+--card:#ffffff;--accent:#1f4e79;--agent:#1f4e79;--cosigned:#b1740f;
+--unsigned:#9aa1ab;--warn:#a3341f;--ok:#1c6b45}
+*{box-sizing:border-box}
+body{margin:0;padding:40px 24px 64px;background:var(--bg);color:var(--ink);
+font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",
+Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:960px;margin:0 auto}
+.eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+color:var(--accent);font-weight:700}
+h1{font-size:27px;line-height:1.25;margin:8px 0 6px;letter-spacing:-.01em}
+.meta{color:var(--muted);font-size:12.5px;margin:0}
+.meta code{background:#eceff3;border-radius:4px;padding:1px 5px;font-size:12px}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;
+padding:22px 24px;margin-top:16px}
+h2{font-size:12px;letter-spacing:.1em;text-transform:uppercase;
+color:var(--muted);margin:0 0 14px;font-weight:700}
+.verdict{display:flex;align-items:flex-start;gap:26px;flex-wrap:wrap}
+.big{font-size:52px;font-weight:800;line-height:1;letter-spacing:-.03em;
+color:var(--accent);font-variant-numeric:tabular-nums}
+.big.warn{color:var(--warn)}
+.verdict p{margin:0;max-width:520px;color:#2c3138}
+.verdict .sub{color:var(--muted);font-size:13px;margin-top:6px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+gap:12px;margin-top:16px}
+.kpi{background:#fafbfc;border:1px solid var(--line);border-radius:8px;
+padding:12px 14px}
+.kpi .n{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.kpi .l{font-size:11.5px;color:var(--muted);text-transform:uppercase;
+letter-spacing:.06em;margin-top:2px}
+.bar{display:flex;height:14px;border-radius:7px;overflow:hidden;
+background:#eceff3;margin:4px 0 12px}
+.bar span{display:block;height:100%}
+.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12.5px;
+color:var(--muted)}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;
+margin-right:6px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+color:var(--muted);font-weight:700}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:#fafbfc}
+.tag{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.04em;
+padding:2px 7px;border-radius:999px;text-transform:uppercase}
+.tag.warn{background:#fbe9e5;color:var(--warn)}
+.tag.info{background:#e9eff6;color:var(--accent)}
+.finding{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);
+font-size:13px}
+.finding:last-child{border-bottom:none}
+.finding .ev{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+font-size:12px;color:#333}
+dl{display:grid;grid-template-columns:170px 1fr;gap:6px 16px;margin:0;
+font-size:12.5px}
+dt{color:var(--muted)}
+dd{margin:0}
+.note{font-size:12.5px;color:var(--muted);margin:14px 0 0;
+padding-top:12px;border-top:1px dashed var(--line)}
+footer{color:var(--muted);font-size:11.5px;margin-top:22px;text-align:center}
+@media print{body{background:#fff;padding:0}
+section{border-color:#d8d8d8;break-inside:avoid}}
+""".strip()
+
+
+def _esc(value: object) -> str:
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+def _bar_segments(report: Report) -> str:
+    total = report.total_commits or 1
+    spans = []
+    for bucket, colour in (("agent", "var(--agent)"),
+                           ("cosigned", "var(--cosigned)"),
+                           ("unsigned", "var(--unsigned)")):
+        count = report.commits_by_bucket[bucket]
+        if count <= 0:
+            continue
+        width = count / total * 100
+        spans.append(f'<span style="width:{width:.4f}%;background:{colour}" '
+                     f'title="{_esc(bucket)}: {count}"></span>')
+    return "".join(spans)
+
+
+def render_html(report: Report, title: str = "AI Code Provenance Audit") -> str:
+    """A self-contained brief for a reader who will not run the CLI.
+
+    No `<script>`, no external asset, no timestamp: the document is a pure
+    function of the Report, so it can be archived next to the JSON and
+    regenerated byte-for-byte. `title` is the only free text (white-label
+    or engagement name); everything else is measured.
+    """
+    from . import __version__
+
+    total = report.total_commits
+    pct = report.ai_ratio * 100
+    breached = bool(report.gate and report.gate["breached"])
+    total_lines = sum(report.lines_by_bucket.values())
+    warns = [f for f in report.findings if f.severity == "warn"]
+    infos = [f for f in report.findings if f.severity != "warn"]
+
+    out: List[str] = []
+    out.append("<!DOCTYPE html>")
+    out.append('<html lang="en">')
+    out.append("<head>")
+    out.append('<meta charset="utf-8">')
+    out.append('<meta name="viewport" content="width=device-width, '
+               'initial-scale=1">')
+    out.append(f"<title>{_esc(title)}</title>")
+    out.append(f"<style>\n{HTML_CSS}\n</style>")
+    out.append("</head>")
+    out.append("<body><main>")
+
+    # Header -------------------------------------------------------------
+    out.append('<header>')
+    out.append('<div class="eyebrow">AI code provenance &middot; audit brief</div>')
+    out.append(f"<h1>{_esc(title)}</h1>")
+    out.append('<p class="meta">repository <code>'
+               f"{_esc(report.repo_path)}</code> &nbsp;·&nbsp; scope <code>"
+               f"{_esc(report.ref)}</code> &nbsp;·&nbsp; schema "
+               f'<code>v{SCHEMA_VERSION}</code></p>')
+    out.append("</header>")
+
+    # Verdict ------------------------------------------------------------
+    out.append('<section class="verdict">')
+    out.append(f'<div class="big{" warn" if breached else ""}">{pct:.1f}%</div>')
+    out.append("<div>")
+    out.append(f"<p><strong>{report.commits_by_bucket['agent']} of {total} "
+               "commits</strong> in scope carry a signature that the roster "
+               "recognizes as an AI agent. The figure is read from "
+               "<code>Co-Authored-By:</code> trailers in the commit messages "
+               "— it is recorded provenance, not a style estimate.</p>")
+    if report.gate is not None:
+        verdict = "BREACHED" if breached else "within limit"
+        out.append(f'<p class="sub">Policy gate: limit '
+                   f"{report.gate['limit'] * 100:.1f}%, measured "
+                   f"{report.gate['ratio'] * 100:.1f}% — "
+                   f"<strong>{_esc(verdict)}</strong>.</p>")
+    else:
+        out.append('<p class="sub">No policy gate was applied to this run. '
+                   "Pass <code>--max-ai-ratio</code> to turn the number into "
+                   "a contract.</p>")
+    out.append("</div></section>")
+
+    # KPIs ---------------------------------------------------------------
+    out.append('<section><h2>At a glance</h2><div class="kpis">')
+    kpis = [
+        (f"{total}", "commits in scope"),
+        (f"{len(report.agents)}", "agents detected"),
+        (f"{total_lines:,}", "lines touched"),
+        (f"{len(warns)}", "warnings"),
+    ]
+    for number, label in kpis:
+        out.append(f'<div class="kpi"><div class="n">{_esc(number)}</div>'
+                   f'<div class="l">{_esc(label)}</div></div>')
+    out.append("</div></section>")
+
+    # Distribution -------------------------------------------------------
+    out.append("<section><h2>Attribution</h2>")
+    out.append(f'<div class="bar">{_bar_segments(report)}</div>')
+    out.append('<div class="legend">')
+    for bucket, colour, label in (
+            ("agent", "var(--agent)", "agent-signed"),
+            ("cosigned", "var(--cosigned)", "cosigned, unrecognized"),
+            ("unsigned", "var(--unsigned)", "no signature")):
+        count = report.commits_by_bucket[bucket]
+        out.append(f'<span><i style="background:{colour}"></i>'
+                   f"{_esc(label)} — {count} "
+                   f"({_pct(count, total)})</span>")
+    out.append("</div>")
+    out.append('<table style="margin-top:16px"><thead><tr>'
+               '<th>bucket</th><th class="num">commits</th>'
+               '<th class="num">share</th><th class="num">lines touched</th>'
+               "</tr></thead><tbody>")
+    for bucket in ("agent", "cosigned", "unsigned"):
+        count = report.commits_by_bucket[bucket]
+        out.append(f"<tr><td>{_esc(bucket)}</td>"
+                   f'<td class="num">{count}</td>'
+                   f'<td class="num">{_pct(count, total)}</td>'
+                   f'<td class="num">{report.lines_by_bucket[bucket]:,}</td>'
+                   "</tr>")
+    out.append("</tbody></table></section>")
+
+    # Agents -------------------------------------------------------------
+    if report.agents:
+        out.append("<section><h2>Agents</h2><table><thead><tr>"
+                   "<th>agent</th><th>id</th><th class=\"num\">commits</th>"
+                   '<th class="num">lines +</th><th class="num">lines −</th>'
+                   '<th class="num">sessions</th><th class="num">longest</th>'
+                   "</tr></thead><tbody>")
+        for a in report.agents:
+            out.append(f"<tr><td>{_esc(a.display_name)}</td>"
+                       f"<td><code>{_esc(a.agent_id)}</code></td>"
+                       f'<td class="num">{a.commits}</td>'
+                       f'<td class="num">{a.lines_added:,}</td>'
+                       f'<td class="num">{a.lines_removed:,}</td>'
+                       f'<td class="num">{a.session_count}</td>'
+                       f'<td class="num">{a.longest_session_commits}</td>'
+                       "</tr>")
+        out.append("</tbody></table>")
+        out.append('<p class="note">Per-agent counts may overlap: one commit '
+                   "can carry several agents' signatures. The bucket totals "
+                   "above are deduplicated by commit — that is the cap "
+                   "invariant, and it is why the two numbers can differ "
+                   "without either being wrong.</p>")
+        out.append("</section>")
+
+    # Authors ------------------------------------------------------------
+    if report.authors:
+        cols = [a.agent_id for a in report.agents] + ["cosigned", "unsigned"]
+        out.append("<section><h2>Authors × agents</h2><table><thead><tr>"
+                   "<th>author</th>")
+        for col in cols:
+            out.append(f'<th class="num">{_esc(col)}</th>')
+        out.append('<th class="num">total</th></tr></thead><tbody>')
+        for a in report.authors:
+            out.append(f"<tr><td>{_esc(a.name)} "
+                       f"<span style=\"color:var(--muted)\">"
+                       f"&lt;{_esc(a.email)}&gt;</span></td>")
+            for col in cols:
+                out.append(f'<td class="num">{a.by_agent.get(col, 0)}</td>')
+            out.append(f'<td class="num"><strong>{a.commits}</strong></td></tr>')
+        out.append("</tbody></table></section>")
+
+    # Findings -----------------------------------------------------------
+    if report.findings:
+        shown = warns + infos
+        out.append("<section><h2>Findings</h2>")
+        for f in shown[:100]:
+            severity = "warn" if f.severity == "warn" else "info"
+            out.append('<div class="finding">'
+                       f'<span class="tag {severity}">{severity}</span>'
+                       f'<div><div class="ev">{_esc(f.rule)} · '
+                       f"{_esc(f.evidence)}</div>"
+                       f"<div>{_esc(f.detail)}</div></div></div>")
+        if len(shown) > 100:
+            out.append(f'<p class="note">Showing the first 100 of '
+                       f"{len(shown)} findings. The JSON report carries every "
+                       "one, each with its commit sha.</p>")
+        out.append("</section>")
+
+    # Method -------------------------------------------------------------
+    out.append("<section><h2>Method &amp; reproducibility</h2><dl>")
+    method = [
+        ("Source of truth", "git commit messages — the <code>Co-Authored-By:</code> "
+                            "trailer block only"),
+        ("Attribution", "deterministic roster rules (name pattern / email domain), "
+                        "first match wins"),
+        ("Not used", "no LLM, no network, no style classifier, no wall clock"),
+        ("Scope", f"<code>{_esc(report.ref)}</code>, {total} commits"),
+        ("Regenerate", f"<code>ghostauthor &lt;repo&gt; --ref "
+                       f"{_esc(report.ref)} --format html</code>"),
+        ("Tool", f"ghostauthor {_esc(__version__)}, report schema "
+                 f"v{SCHEMA_VERSION}"),
+    ]
+    for key, value in method:
+        out.append(f"<dt>{key}</dt><dd>{value}</dd>")
+    out.append("</dl>")
+    out.append('<p class="note">This document contains no generation '
+               "timestamp by design. It is a pure function of the repository "
+               "state: regenerating it on the same commits yields the same "
+               "bytes, which is what lets it sit next to the JSON as "
+               "evidence rather than as a screenshot.</p>")
+    out.append("</section>")
+
+    out.append("<footer>Generated by ghostauthor — deterministic AI code "
+               "provenance ledger. Unsigned &ne; human: the ledger records "
+               "signatures, it does not infer authorship.</footer>")
+    out.append("</main></body></html>")
+    return "\n".join(out) + "\n"

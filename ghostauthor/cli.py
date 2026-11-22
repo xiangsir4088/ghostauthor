@@ -23,6 +23,15 @@ v1.2 subcommands, read side (advice, safe unsupervised):
     and why the audit attributed the commit the way it did (same
     attribution code as the audit); optional --bundle writes a
     reproducible evidence package (report + evidence + roster + manifest)
+
+v1.5 subcommands, read side:
+  coverage — adoption diagnosis: why the ledger is empty, and what to do
+    about it. Separates "signature written but roster does not claim it"
+    (a data fix) from "no signature at all" (a write-path fix), and
+    reports known tool markers as hints, never as attributions.
+  portfolio — the same ledger aggregated across repositories, weighted by
+    commit (never a mean of ratios), with per-repository failures recorded
+    instead of aborting the scan.
 """
 from __future__ import annotations
 
@@ -33,13 +42,19 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from . import __version__
+from .coverage import (build_coverage, render_coverage_json,
+                       render_coverage_text)
 from .engine import DEFAULT_SESSION_GAP_MINUTES, build_report
 from .evidence import (build_bundle, render_evidence_json,
                        render_evidence_text, select_evidence_commits)
 from .gitparse import GitError, iter_commits
 from .lint import lint_roster
 from .models import parse_window_value
-from .report import render_json, render_markdown, render_sarif, render_text
+from .portfolio import (build_portfolio, discover_repos, read_repo_list,
+                        render_portfolio_html, render_portfolio_json,
+                        render_portfolio_text)
+from .report import (render_html, render_json, render_markdown, render_sarif,
+                     render_text)
 from .roster import (Roster, RosterError, builtin_roster_path, load_roster,
                      load_roster_dir)
 from .signer import (SignError, install_hook, sign_head, sign_message_file,
@@ -70,8 +85,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "from the target (HEAD or --ref) but not from REF "
                         "(git range REF..target); mutually exclusive with "
                         "--all")
-    p.add_argument("--format", choices=["text", "json", "markdown", "sarif"],
-                   default="text", dest="fmt")
+    p.add_argument("--format",
+                   choices=["text", "json", "markdown", "sarif", "html"],
+                   default="text", dest="fmt",
+                   help="html is a self-contained, timestamp-free audit brief "
+                        "for readers who will not run the CLI (default: text)")
+    p.add_argument("--title", default="AI Code Provenance Audit",
+                   help="heading of the HTML brief (ignored by other formats); "
+                        "use it for a white-label or engagement name")
     p.add_argument("--out", help="write the report to FILE instead of stdout")
     p.add_argument("--roster",
                    help="path to a custom roster JSON (default: builtin)")
@@ -448,6 +469,183 @@ def evidence_main(argv: Optional[List[str]] = None) -> int:
     return 0
 
 
+def _build_coverage_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="ghostauthor coverage",
+        description="Adoption diagnosis: how much of this repository carries "
+                    "a roster-recognized signature, and why the rest does "
+                    "not. Separates an unrecognized signature (fix: a roster "
+                    "rule) from a missing one (fix: the commit-time hook). "
+                    "Markers such as 'Generated with [Claude Code]' are "
+                    "reported as hints, never as attributions.")
+    p.add_argument("path", nargs="?", default=".",
+                   help="repository path (default: current directory)")
+    scope = p.add_mutually_exclusive_group()
+    scope.add_argument("--all", action="store_true",
+                       help="scan all refs instead of HEAD")
+    scope.add_argument("--ref", metavar="REF",
+                       help="scan one ref (branch/tag/commit) instead of HEAD")
+    p.add_argument("--base", metavar="REF",
+                   help="two-branch diff (git range REF..target); mutually "
+                        "exclusive with --all")
+    p.add_argument("--since", metavar="BOUND",
+                   help="include commits with authored_at >= BOUND")
+    p.add_argument("--until", metavar="BOUND",
+                   help="include commits with authored_at < BOUND (exclusive)")
+    p.add_argument("--roster",
+                   help="path to a custom roster JSON (default: builtin)")
+    p.add_argument("--roster-dir",
+                   help="directory of roster JSON files to merge (mutually "
+                        "exclusive with --roster)")
+    p.add_argument("--format", choices=["text", "json"], default="text",
+                   dest="fmt", help="output format (default: text)")
+    p.add_argument("--out", help="write the diagnosis to FILE instead of stdout")
+    p.add_argument("--version", action="version",
+                   version=f"ghostauthor {__version__}")
+    return p
+
+
+def coverage_main(argv: Optional[List[str]] = None) -> int:
+    args = _build_coverage_parser().parse_args(argv)
+    roster, error = _load_roster(args)
+    if error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    assert roster is not None
+
+    if args.all and args.base is not None:
+        print("error: ref-conflict: --base needs a single target (HEAD or "
+              "--ref), not --all", file=sys.stderr)
+        return 2
+
+    try:
+        since = (_parse_window_value(args.since)
+                 if args.since is not None else None)
+        until = (_parse_window_value(args.until)
+                 if args.until is not None else None)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        commits = iter_commits(args.path, all_refs=args.all, ref=args.ref,
+                               base=args.base)
+    except (GitError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        cov = build_coverage(
+            commits, roster,
+            repo_path=str(Path(args.path).resolve()),
+            ref=(f"{args.base}..{args.ref or 'HEAD'}" if args.base is not None
+                 else ("all" if args.all else (args.ref or "HEAD"))),
+            since=since, until=until)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    text = (render_coverage_json(cov) if args.fmt == "json"
+            else render_coverage_text(cov))
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+def _build_portfolio_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="ghostauthor portfolio",
+        description="Aggregate the ledger across many repositories. The "
+                    "aggregate ratio is weighted by commit (sum of signed "
+                    "commits / sum of commits), never a mean of per-repo "
+                    "ratios. A repository that cannot be scanned is recorded "
+                    "in the output instead of aborting the run.")
+    p.add_argument("root", nargs="?", default=".",
+                   help="directory to scan for repositories (default: .)")
+    p.add_argument("--repos-file", metavar="FILE",
+                   help="read repository paths from FILE (one per line, # "
+                        "comments; relative paths resolve against FILE's "
+                        "directory) instead of walking ROOT")
+    p.add_argument("--max-depth", type=int, default=3, metavar="N",
+                   help="how many directory levels below ROOT to search "
+                        "(default: 3; a directory with .git is never descended)")
+    p.add_argument("--ref", metavar="REF", default="HEAD",
+                   help="ref to audit in every repository (default: HEAD)")
+    p.add_argument("--since", metavar="BOUND",
+                   help="include commits with authored_at >= BOUND")
+    p.add_argument("--until", metavar="BOUND",
+                   help="include commits with authored_at < BOUND (exclusive)")
+    p.add_argument("--session-gap", type=int,
+                   default=DEFAULT_SESSION_GAP_MINUTES, metavar="MINUTES")
+    p.add_argument("--roster",
+                   help="path to a custom roster JSON (default: builtin)")
+    p.add_argument("--roster-dir",
+                   help="directory of roster JSON files to merge (mutually "
+                        "exclusive with --roster)")
+    p.add_argument("--format", choices=["text", "json", "html"], default="text",
+                   dest="fmt", help="output format (default: text)")
+    p.add_argument("--title", default="AI Code Provenance Portfolio",
+                   help="heading of the HTML brief (ignored by other formats)")
+    p.add_argument("--out", help="write the portfolio to FILE instead of stdout")
+    p.add_argument("--version", action="version",
+                   version=f"ghostauthor {__version__}")
+    return p
+
+
+def portfolio_main(argv: Optional[List[str]] = None) -> int:
+    args = _build_portfolio_parser().parse_args(argv)
+    roster, error = _load_roster(args)
+    if error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    assert roster is not None
+
+    try:
+        since = (_parse_window_value(args.since)
+                 if args.since is not None else None)
+        until = (_parse_window_value(args.until)
+                 if args.until is not None else None)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        paths = (read_repo_list(args.repos_file) if args.repos_file
+                 else discover_repos(args.root, max_depth=args.max_depth))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if not paths:
+        print(f"error: portfolio-empty: no git repositories found under "
+              f"{args.root!r} (depth {args.max_depth}); point at a directory "
+              f"or use --repos-file", file=sys.stderr)
+        return 2
+
+    pf = build_portfolio(paths, roster, ref=args.ref,
+                         session_gap_minutes=args.session_gap,
+                         since=since, until=until, root=args.root)
+
+    if int(pf.totals["scanned"]) == 0:
+        # Every repository failed. That is an environment error, not a
+        # conclusion — the same distinction the audit makes for not-a-repo.
+        print("error: portfolio-empty: every repository failed to scan",
+              file=sys.stderr)
+        for err in pf.errors:
+            print(f"  {err['path']}: {err['error']}", file=sys.stderr)
+        return 2
+
+    text = (render_portfolio_json(pf) if args.fmt == "json"
+            else render_portfolio_html(pf, title=args.title) if args.fmt == "html"
+            else render_portfolio_text(pf))
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
 def _load_roster(args: argparse.Namespace) -> Tuple[Optional[Roster],
                                                     Optional[str]]:
     """Shared roster loading: (roster, error). Never raises."""
@@ -474,13 +672,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Subcommand dispatch happens before argparse: the audit contract
     # (positional PATH, all flags) is untouched. Note: a repository
     # literally named after a subcommand is shadowed by it — the reserved
-    # names are: sign, evidence, _commit-msg-hook, install-hook,
-    # uninstall-hook, lint-roster. Documented; none is a plausible repo
-    # name.
+    # names are: sign, evidence, coverage, portfolio, _commit-msg-hook,
+    # install-hook, uninstall-hook, lint-roster. Documented; none is a
+    # plausible repo name.
     if argv and argv[0] == "sign":
         return sign_main(argv[1:])
     if argv and argv[0] == "evidence":
         return evidence_main(argv[1:])
+    if argv and argv[0] == "coverage":
+        return coverage_main(argv[1:])
+    if argv and argv[0] == "portfolio":
+        return portfolio_main(argv[1:])
     if argv and argv[0] == "_commit-msg-hook":
         return commit_msg_hook_main(argv[1:])
     if argv and argv[0] == "install-hook":
@@ -500,15 +702,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.all and args.base is not None:
         print("error: ref-conflict: --base needs a single target (HEAD or "
               "--ref), not --all", file=sys.stderr)
-        return 2
-
-    try:
-        if args.roster_dir is not None:
-            roster = load_roster_dir(args.roster_dir)
-        else:
-            roster = load_roster(args.roster or builtin_roster_path())
-    except RosterError as exc:
-        print(f"error: {exc}", file=sys.stderr)
         return 2
 
     try:
@@ -549,6 +742,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         text = render_markdown(report)
     elif args.fmt == "sarif":
         text = render_sarif(report)
+    elif args.fmt == "html":
+        text = render_html(report, title=args.title)
     else:
         text = render_text(report)
 

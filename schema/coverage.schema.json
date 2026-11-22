@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atomgit.com/xiangsir/ghostauthor/schema/coverage.schema.json",
+  "title": "ghostauthor coverage diagnosis (schema_version 1)",
+  "description": "The frozen shape of `ghostauthor coverage --format json`. Additive changes (new keys) keep schema_version 1; a rename, deletion, retype or semantic change bumps it. This is a DIAGNOSIS output, not an audit artefact: it explains adoption, it never re-attributes a commit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "repo_path",
+    "ref",
+    "window",
+    "total_commits",
+    "signed_commits",
+    "coverage_ratio",
+    "adoption",
+    "buckets",
+    "first_signed_at",
+    "last_signed_at",
+    "by_author",
+    "by_period",
+    "signals",
+    "unmatched_trailers",
+    "actions"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1"]
+    },
+    "repo_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "window": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["since", "until"],
+      "properties": {
+        "since": {"type": ["integer", "null"]},
+        "until": {"type": ["integer", "null"]}
+      }
+    },
+    "total_commits": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "signed_commits": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "coverage_ratio": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "adoption": {
+      "type": "string",
+      "enum": ["none", "minimal", "partial", "adopted"]
+    },
+    "buckets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "cosigned", "unsigned"],
+      "properties": {
+        "agent": {"type": "integer", "minimum": 0},
+        "cosigned": {"type": "integer", "minimum": 0},
+        "unsigned": {"type": "integer", "minimum": 0}
+      }
+    },
+    "first_signed_at": {
+      "type": ["integer", "null"]
+    },
+    "last_signed_at": {
+      "type": ["integer", "null"]
+    },
+    "by_author": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "email", "commits", "signed", "cosigned",
+                     "unsigned", "coverage_ratio"],
+        "properties": {
+          "name": {"type": "string"},
+          "email": {"type": "string"},
+          "commits": {"type": "integer", "minimum": 0},
+          "signed": {"type": "integer", "minimum": 0},
+          "cosigned": {"type": "integer", "minimum": 0},
+          "unsigned": {"type": "integer", "minimum": 0},
+          "coverage_ratio": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    "by_period": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["period", "commits", "signed", "coverage_ratio"],
+        "properties": {
+          "period": {"type": "string", "pattern": "^[0-9]{4}-W[0-9]{2}$"},
+          "commits": {"type": "integer", "minimum": 0},
+          "signed": {"type": "integer", "minimum": 0},
+          "coverage_ratio": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    "signals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["agent_id", "label", "commits", "sample_shas", "example"],
+        "properties": {
+          "agent_id": {"type": "string", "minLength": 1},
+          "label": {"type": "string", "minLength": 1},
+          "commits": {"type": "integer", "minimum": 1},
+          "sample_shas": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 7}
+          },
+          "example": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "unmatched_trailers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["trailer", "name", "email_domain", "commits",
+                     "sample_shas"],
+        "properties": {
+          "trailer": {"type": "string", "minLength": 1},
+          "name": {"type": "string"},
+          "email_domain": {"type": "string"},
+          "commits": {"type": "integer", "minimum": 1},
+          "sample_shas": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 7}
+          }
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "detail", "command"],
+        "properties": {
+          "code": {"type": "string", "minLength": 1},
+          "detail": {"type": "string", "minLength": 1},
+          "command": {"type": "string"}
+        }
+      }
+    }
+  }
+}

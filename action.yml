@@ -57,7 +57,7 @@ inputs:
     required: false
     default: ""
   format:
-    description: "Report format: text | json | markdown | sarif."
+    description: "Report format: text | json | markdown | sarif | html."
     required: false
     default: "text"
   out:

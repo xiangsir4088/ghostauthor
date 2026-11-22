@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__
+from .coverage import build_coverage, render_coverage_json
 from .engine import DEFAULT_SESSION_GAP_MINUTES, build_report
 from .evidence import render_evidence_json, select_evidence_commits
 from .gitparse import GitError, iter_commits
@@ -256,6 +257,76 @@ def handle_evidence(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     return 200, {"evidence": render_evidence_json(commits, roster)}
 
 
+def handle_coverage(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+    """Pure request handler for POST /api/coverage -> (HTTP status, body).
+
+    The browser's answer to "why is this number so low?". Same selection and
+    rendering as `ghostauthor coverage --format json`, returned as a
+    pre-serialized STRING so the bytes match the CLI exactly — one source of
+    truth, four skins.
+
+    Status model mirrors the exit-code contract:
+      400  bad request — missing path, scope conflict, bad window, bad roster
+      404  not-a-repo
+      422  no-commits — well-formed request, nothing to diagnose
+    """
+    path = params.get("path")
+    if not path:
+        return 400, {"error": _err("missing-path", "path is required")}
+
+    all_refs = bool(params.get("all"))
+    ref = params.get("ref") or None
+    base = params.get("base") or None
+    if all_refs and ref:
+        return 400, {"error": _err("ref-conflict", "use all or ref, not both")}
+    if all_refs and base:
+        return 400, {"error": _err("ref-conflict", "use all or base, not both")}
+    for name, value in (("ref", ref), ("base", base)):
+        if value is not None and value.startswith("-"):
+            return 400, {"error": _err("ref-invalid",
+                                       f"{name} cannot start with '-'")}
+
+    since = until = None
+    try:
+        if params.get("since") not in (None, ""):
+            since = parse_window_value(str(params["since"]))
+        if params.get("until") not in (None, ""):
+            until = parse_window_value(str(params["until"]))
+    except ValueError as exc:
+        return 400, {"error": _err(_err_code(str(exc)), str(exc))}
+
+    roster_file = params.get("roster")
+    roster_dir = params.get("roster_dir")
+    if roster_file and roster_dir:
+        return 400, {"error": _err("roster-conflict",
+                                   "use roster or roster_dir, not both")}
+    try:
+        if roster_dir:
+            roster = load_roster_dir(roster_dir)
+        else:
+            roster = load_roster(roster_file or builtin_roster_path())
+    except RosterError as exc:
+        return 400, {"error": _err("roster-error", str(exc))}
+
+    try:
+        commits = iter_commits(str(path), all_refs=all_refs, ref=ref, base=base)
+    except GitError as exc:
+        return _GIT_STATUS.get(exc.code, 500), {"error": _err(exc.code, str(exc))}
+    except ValueError as exc:
+        return 400, {"error": _err(_err_code(str(exc)), str(exc))}
+
+    try:
+        cov = build_coverage(
+            commits, roster, repo_path=str(Path(str(path)).resolve()),
+            ref=(f"{base}..{ref or 'HEAD'}" if base is not None
+                 else ("all" if all_refs else (ref or "HEAD"))),
+            since=since, until=until)
+    except ValueError as exc:
+        return 400, {"error": _err(_err_code(str(exc)), str(exc))}
+
+    return 200, {"coverage": render_coverage_json(cov)}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ghostauthor/" + __version__
     protocol_version = "HTTP/1.1"
@@ -287,7 +358,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": _err("not-found", self.path)})
 
     def do_POST(self) -> None:
-        if self.path not in ("/api/audit", "/api/evidence"):
+        if self.path not in ("/api/audit", "/api/evidence", "/api/coverage"):
             self._json(404, {"error": _err("not-found", self.path)})
             return
         try:
@@ -301,6 +372,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/evidence":
             status, body = handle_evidence(params)
+        elif self.path == "/api/coverage":
+            status, body = handle_coverage(params)
         else:
             status, body = handle_audit(params)
         self._json(status, body)

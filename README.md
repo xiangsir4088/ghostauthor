@@ -29,6 +29,30 @@ reads those signatures the way `git log` reads everything else: with rigor.
 `ghostauthor` does exactly that one thing, and treats the answer like an
 audit artifact: reproducible, traceable, appealable.
 
+## Start here if the ledger is empty
+
+A provenance ledger has a cold-start problem: if the agents in your repository
+never wrote a trailer, the audit is *correct* and *useless*. Every commit is
+`unsigned`, the ratio is `0.0%`, and it looks like the tool is broken. It is
+not — the signatures are missing, and there are exactly two reasons:
+
+```bash
+ghostauthor coverage /path/to/your/repo
+```
+
+`coverage` separates them, because they have different fixes:
+
+| What it finds | What it means | Fix |
+|---|---|---|
+| A trailer no roster rule claims | The signature exists (`Co-Authored-By: Cursor <…>`), the roster just does not know that name | **Data**: add a roster rule (`--roster`) |
+| Unsigned commits carrying a literal tool marker (`Generated with [Claude Code]`) | The agent never emitted a trailer | **Write path**: `install-hook`, or turn the trailer on in the agent |
+| Unsigned commits with no marker | Unknown. It may be a human, or an agent that leaves no trace | **Nothing is claimed.** The ledger records signatures; it does not guess |
+
+It also reports coverage by author and by ISO week, so "when did adoption
+start, and who is still outside it" is a measurement rather than a guess.
+`coverage` never changes an attribution — markers are hints, and they are
+labelled as hints.
+
 ## 60-second start
 
 ```bash
@@ -46,6 +70,13 @@ ghostauthor /path/to/your/repo --base main --ref feature-x
 # two-branch diff: only what feature-x adds over main (git range main..feature-x)
 ghostauthor /path/to/your/repo --format sarif
 # SARIF 2.1.0 for compliance pipelines
+ghostauthor /path/to/your/repo --format html --out audit.html
+# a self-contained brief for readers who will not run the CLI: no script,
+# no remote asset, no timestamp — the same state regenerates the same bytes
+ghostauthor portfolio ~/code --format html --out portfolio.html
+# the same ledger across every repository under a directory (aggregate is
+# weighted by commit, never a mean of ratios); a broken repo is recorded
+# in the output instead of aborting the scan
 ```
 
 Signing (opt-in, v1.0) — the only write path, off by default:
@@ -355,10 +386,34 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - [x] v1.2.0 — per-commit `evidence` (which roster rule matched each trailer and why — the same attribution code as the audit, so the two can never disagree) + `--bundle` reproducible evidence package (report + evidence + roster snapshot + sha256 manifest, no timestamps) + `roster.match_detail` (reason-carrying match)
 - [x] v1.3.0 — installable from PyPI (`pip install ghostauthor`; OIDC trusted publishing, no token in the repo) + the evidence JSON contract frozen (`schema/evidence.schema.json`, enforced by verify — a mutation goes red) + `docs/roster.md` (writing guide) + `README.zh.md`
 - [x] v1.4.0 — read-side surface parity: the MCP `repo_authorship_report` gains the full option surface (scope, window, roster, gate) and a second read-only tool `commit_evidence`; the web gains `/api/evidence` + an in-dashboard evidence drill-down. Every surface now serves the **same bytes** as the CLI for the same request — parity by construction, not by test, because report/evidence selection is one shared function
+- [x] v1.5.0 — **product surface**: `coverage` (adoption diagnosis — separates an unrecognized signature from a missing one, and never guesses), `--format html` (a self-contained, timestamp-free brief that can be mailed or archived), `portfolio` (multi-repository aggregate, weighted by commit, partial failures recorded). Read-side additions only — no schema bump
+
+## Free and commercial
+
+The CLI is MIT and always will be. It is also the whole product for one
+repository: audit, evidence, signing, the MCP server, the local dashboard.
+
+Everything a **team or an auditor** needs on top of that is a separate,
+paid surface — and the boundary is deliberately drawn at the point where
+work stops being a command and becomes a deliverable:
+
+| Free (MIT, this repository) | Commercial |
+|---|---|
+| CLI audit, JSON / text / markdown / SARIF | Branded HTML briefs for a board or a client |
+| Per-commit evidence, evidence bundles | Multi-repository portfolio reports with history |
+| Local web dashboard | Hosted scans, scheduled snapshots, trend lines |
+| `coverage` diagnosis | Policy-as-code: per-path / per-team rules |
+| `portfolio` over local checkouts | Organisation roll-up with SSO and retention |
+| Single-repository CI gate | Audit liaison: methodology pack, reviewer Q&A |
+
+Nothing in the free tier is crippled after the fact, and the JSON contract is
+frozen either way: a report you generate today validates against the same
+schema next year. If you need the commercial surface, open an issue with
+`commercial` in the title.
 
 ## Tests
 
-169 tests pin **properties**, not coverage:
+236 tests pin **properties**, not coverage:
 
 - **Reproducibility** — same repo state ⇒ identical report, regardless of input order
 - **Trailer-block semantics** — negative cases: signature in the body, signature followed by prose, CRLF messages, missing email, lowercase keys, continuation lines
@@ -383,6 +438,10 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - **Web parity** — the web transport serves byte-identical JSON to the CLI; request-level errors (bad window/gate/roster) are 400, per-entry errors (not-a-repo 404, no-commits 422) carry their documented codes
 - **MCP parity** — both MCP tools return the CLI's exact bytes for the same request: `repo_authorship_report` mirrors the full option surface, `commit_evidence` mirrors `evidence --format json` (multi-sha input order preserved, no bundle — the server never writes files); request errors carry the CLI's codes, repo errors (`sha-unknown`, `not-a-repo`) are pinned
 - **Web evidence** — `/api/evidence` serves the CLI's `evidence` bytes for scope / multi-sha / window requests; `sha-unknown` is 422, `not-a-repo` is 404, request errors are 400; the dashboard carries the evidence UI (query box + per-sha inline drill-down)
+- **Adoption diagnosis** — `coverage` bands are inclusive at the lower bound (0.2 / 0.8) and zero is its own band (`none`, never `minimal`); an unrecognized trailer is reported as a signature with its fix, a known tool marker is a hint on an unsigned commit and never changes a bucket, and a commit with no marker produces no claim at all; author rows reconcile with the bucket totals; the JSON is byte-stable and validates against `schema/coverage.schema.json`
+- **Portfolio weighting** — the aggregate is `sum(signed)/sum(commits)`, never a mean of per-repository ratios (pinned with 1 commit at 100% vs 99 at 0%); a failed repository is counted, named and excluded from the totals instead of aborting the run; all repositories failing is `portfolio-empty` (exit 2); per-repository agent detail expands the rollup
+- **HTML brief** — byte-stable (no generation timestamp), self-contained (no `<script>`, no remote URL), every interpolated value escaped, and the method statement travels with the document — the properties that let it sit next to the JSON as evidence rather than as a screenshot
+- **Web coverage** — `/api/coverage` serves the CLI's `coverage` bytes for the same request; the dashboard shows an inline diagnosis prompt only below 20% coverage (a healthy ledger is never nagged), and its error mapping matches the exit codes
 
 One click runs the whole matrix (roster → unit suite → 3 deterministic
 fixture repos → CLI exit codes → real MCP `initialize`/`tools/list`/

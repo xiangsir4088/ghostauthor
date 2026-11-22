@@ -48,7 +48,7 @@ jobs:
 | `since` / `until` | — | time window (`since` inclusive, `until` exclusive) |
 | `session-gap` | `360` | minutes; max gap between agent commits in one session |
 | `max-ai-ratio` | off | gate threshold, `0..1` |
-| `format` | `text` | `text` / `json` / `markdown` / `sarif` |
+| `format` | `text` | `text` / `json` / `markdown` / `sarif` / `html` |
 | `out` | stdout | write report to file |
 | `fail-on-breach` | `true` | `false` records `breached=true` without failing the job |
 | `python-version` | `3.11` | interpreter used to run the tool |

@@ -184,3 +184,47 @@ cannot disagree about a commit. There is deliberately **no golden
 snapshot** for the evidence JSON: the payload carries the roster source
 path as the user gave it, and a golden would pin the auditor's
 filesystem layout.
+
+## The diagnostic contracts: coverage and portfolio (v1.5)
+
+Two new read-side outputs carry their own frozen shape, with the same
+discipline and the same compatibility policy as the report:
+
+| Output | Schema | Root keys |
+|---|---|---|
+| `ghostauthor coverage --format json` | `schema/coverage.schema.json` | 16 |
+| `ghostauthor portfolio --format json` | `schema/portfolio.schema.json` | 7 |
+
+Both declare `schema_version: "1"`, both set
+`additionalProperties: false`, and both evolve additively: a new key keeps
+the version, a rename / deletion / retype / semantic change bumps it.
+
+**Why they are frozen separately from the report.** They are *diagnosis*,
+not *attribution*. The report and the evidence document answer "who signed
+this commit"; `coverage` answers "why is the ledger empty" and `portfolio`
+answers "what does the ledger say across many repositories". Freezing them
+with the report would couple a governance artefact to an onboarding aid: a
+change in how adoption is *explained* would look like a change in what
+attribution *means*. Keeping them separate is what lets `coverage` grow
+(e.g. a new known-tool marker) without touching the report contract.
+
+**What they may never do.** Neither output re-attributes a commit, and
+neither may disagree with the report about one:
+
+- `coverage.signed_commits` must equal the report's
+  `commits_by_bucket.agent` for the same scope and window (verify step 25
+  recomputes the ratio and reconciles the author rows).
+- `coverage.signals` are **hints about missing signatures**. They are
+  produced only for commits the report buckets as `unsigned`, they never
+  change a bucket, and a commit with no recognized marker produces no
+  entry at all.
+- `portfolio` derives every per-repository number from a real
+  `build_report` call, so a repository's row equals what the CLI would
+  print for that repository.
+- `portfolio.totals.ai_ratio` is weighted by commit
+  (`sum(agent_commits) / sum(total_commits)`); `mean_repo_ratio` is
+  reported beside it and is never a substitute.
+
+Enforced by `verify.py` steps 25–26: both schemas are valid within the
+frozen keyword subset, both real CLI outputs validate, the aggregates
+reconcile with their sources, and the JSON is byte-stable across runs.

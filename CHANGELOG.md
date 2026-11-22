@@ -9,7 +9,69 @@ The read-side JSON contract is frozen (`schema_version` 1, see
 a rename, deletion or semantic change bumps it. The write path is opt-in and
 additive in every release below — no repository is ever signed by default.
 
-## [1.4.0] — 2026-11-10
+## [1.5.0] — 2026-11-22
+
+**Product surface**: the ledger stops being a command you have to interpret
+and becomes three things a team can actually use — a diagnosis for the empty
+ledger, a deliverable for someone who will not run the CLI, and an aggregate
+for an organisation rather than a repository.
+
+All three are read-side additions. **No schema bump**: `report.schema.json`
+and `evidence.schema.json` are untouched, and the new outputs carry their own
+`schema_version: "1"`.
+
+### Added
+- **`ghostauthor coverage`**: adoption diagnosis. It exists because a
+  provenance ledger has a cold-start problem — if the agents never wrote a
+  trailer, a 0.0% report is *correct* and *useless*, and the operator
+  concludes the tool is broken. `coverage` separates the two causes and gives
+  each a different fix:
+  - a trailer the roster does not recognize (`Co-Authored-By: Cursor <…>`) →
+    a **data** fix, with the exact trailer and commit count;
+  - an unsigned commit carrying a known tool's literal marker
+    (`Generated with [Claude Code]`) → a **write-path** fix, with the
+    suggested `install-hook` command.
+
+  Markers are **hints, never attributions**: `signed_commits` is unchanged by
+  them, and a commit with no marker produces no claim at all. Adoption bands
+  (`none` / `minimal` / `partial` / `adopted`, boundaries 0.2 and 0.8,
+  lower-bound inclusive) are pinned by tests. Also reports coverage by author
+  and by ISO week (UTC), and the first/last signed commit.
+- **`--format html`** (+ `--title`): a self-contained audit brief for a
+  board, a client or an archive. No `<script>`, no remote asset, and **no
+  generation timestamp** — it is a pure function of the report, so the same
+  repository state regenerates the same bytes, which is what lets it sit next
+  to the JSON as evidence rather than as a screenshot. Every interpolated
+  value is HTML-escaped; the method statement ("no LLM, no network, no style
+  classifier") travels with the document.
+- **`ghostauthor portfolio`**: the same ledger across repositories, from a
+  directory walk (`--max-depth`) or a `--repos-file` list. The aggregate is
+  **weighted by commit** (`sum(signed) / sum(commits)`), never a mean of
+  per-repository ratios — the unweighted figure is reported next to it so the
+  two can never be confused. A repository that cannot be scanned is recorded
+  in `errors` and excluded from the totals instead of aborting the run; every
+  repository failing is `portfolio-empty` (exit 2), not an empty success.
+  Per-repository agent detail expands the cross-repository rollup.
+- **Web `/api/coverage`**: the same diagnosis bytes over HTTP, plus an in-place prompt in the dashboard when a report's ratio is below 20% — the moment a first-time user is most likely to conclude the tool is broken. Clicking it runs the diagnosis and renders the actions inline; the hint is absent above 20%, so a healthy ledger is never nagged.
+- **`schema/coverage.schema.json`** and **`schema/portfolio.schema.json`**: both diagnostic outputs are frozen on the same terms as the report (`schema_version` `1`, `additionalProperties: false`, additive ⇒ no bump). Frozen separately from the report on purpose: they explain adoption, they never re-attribute a commit, and a change in how adoption is *explained* must not look like a change in what attribution *means*.
+- **`docs/commercial.md`**: the business design — what is actually sold
+  (a number that survives cross-examination, not the CLI), the three buyer
+  segments and their triggers, the free/paid boundary and its two rules,
+  pricing shape and rationale, why open-core before SaaS, distribution,
+  moat, risks, a four-quarter plan and a deliberately unglamorous revenue
+  expectation.
+- **README**: a "Start here if the ledger is empty" section (the cold-start
+  problem, with the fix table), the new commands in the 60-second start, and
+  a "Free and commercial" boundary table.
+- **verify steps 25–27**: coverage (bands, signature-vs-silence, author
+  reconciliation, window semantics, byte stability), portfolio (weighted
+  aggregate, partial-failure recording, agent rollup, self-contained
+  byte-stable HTML), HTML brief (byte stability, no script / remote /
+  timestamp, measured numbers present).
+
+199 → 236 tests / verify 27 steps green.
+
+
 
 **Surface parity**: the third skin catches up with the read side. The
 ledger was already byte-identical across CLI / MCP / Web for the audit;

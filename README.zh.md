@@ -30,6 +30,24 @@ commit 历史里是一个不可验证的断言。** agent 们已经在一个标�
 `ghostauthor` 就做这一件事，并把答案当成审计产物对待：可复现、可追溯、
 可申诉。
 
+## 账本是空的？先看这里
+
+溯源账本有个冷启动问题：如果仓库里的 agent 从来没写过 trailer，审计结果是**正确但没用**的——每条 commit 都是 `unsigned`，占比 `0.0%`，看起来像工具坏了。它没坏，是签名没写。而原因只有两种：
+
+```bash
+ghostauthor coverage /path/to/your/repo
+```
+
+`coverage` 把两种原因分开，因为修法完全不同：
+
+| 它发现什么 | 意味着什么 | 怎么修 |
+|---|---|---|
+| 有 trailer，但 roster 规则不认 | 签名真实存在（`Co-Authored-By: Cursor <…>`），只是内置 roster 不认识这个名字 | **改数据**：加一条 roster 规则（`--roster`） |
+| 没 trailer，但正文有确定的工具标记（`Generated with [Claude Code]`） | agent 根本没写 trailer | **改写路径**：`install-hook`，或在 agent 里打开 trailer |
+| 没 trailer，也没有标记 | 未知。可能是人写的，也可能是没留痕的 agent | **不做任何断言**。账本只记录签名，不猜 |
+
+它还会给出按作者、按 ISO 周的覆盖率——「采纳是从哪天开始的、谁还在外面」从此是测量结果，不是猜测。`coverage` 不改变任何归因：标记只是线索，而且被明确标注为线索。
+
 ## 60 秒上手
 
 ```bash
@@ -47,6 +65,12 @@ ghostauthor /path/to/your/repo --base main --ref feature-x
 # 双分支 diff：只算 feature-x 相对 main 新增的部分（git 区间 main..feature-x）
 ghostauthor /path/to/your/repo --format sarif
 # SARIF 2.1.0，给合规流水线用
+ghostauthor /path/to/your/repo --format html --out audit.html
+# 给「不会去跑 CLI 的人」看的自包含简报：无脚本、无外部资源、无生成时间戳
+# ——同一份仓库状态重新生成，字节完全相同
+ghostauthor portfolio ~/code --format html --out portfolio.html
+# 把同一本账汇总到目录下所有仓库（聚合值按 commit 加权，绝不是比率的平均）；
+# 扫不动的仓库会被记录在输出里，而不是让整次扫描中断
 ```
 
 签名（opt-in，v1.0）——唯一的写路径，默认关闭：
@@ -324,6 +348,24 @@ agent——其中 7 个带公认的 `signing` 身份，所以
 - [x] v1.2.0 — 单 commit 级 `evidence`（每条 trailer 被哪条规则命中、为何这样归因——与审计同一个归因代码，两者不可能不一致）+ `--bundle` 可复现证据包（report + evidence + roster 快照 + sha256 manifest，无时间戳）+ `roster.match_detail`（带理由的匹配）
 - [x] v1.3.0 — 可从 PyPI 安装（`pip install ghostauthor`；OIDC trusted publishing，仓库内无 token）+ evidence JSON 契约冻结（`schema/evidence.schema.json`，verify 强制——一改就红）+ `docs/roster.md`（写作指南）+ `README.zh.md`
 - [x] v1.4.0 — 读侧表面一致性：MCP `repo_authorship_report` 补齐完整选项面（scope、窗口、roster、gate）并新增第二个只读工具 `commit_evidence`；web 新增 `/api/evidence` + 面板内证据钻取。现在每个表面对同一请求都返回**与 CLI 相同的字节**——一致性由构造保证，而非靠测试，因为 report/evidence 的选择是同一个共享函数
+- [x] v1.5.0 — **产品面**：`coverage`（采纳诊断——把「签名没被认出来」和「签名根本没写」分开，且从不猜）、`--format html`（自包含、无时间戳的简报，可发邮件、可存档）、`portfolio`（多仓库聚合，按 commit 加权，部分失败被记录）。纯读侧新增，零 schema bump
+
+## 免费与商业
+
+CLI 是 MIT，永远都是。对单个仓库而言，它也是完整的产品：审计、证据、签名、MCP server、本地仪表盘。
+
+团队和审计方需要的东西另算，而分界线刻意画在**「从命令变成交付物」**的地方：
+
+| 免费（MIT，本仓库） | 商业版 |
+|---|---|
+| CLI 审计，JSON / text / markdown / SARIF | 带品牌/白标的 HTML 简报，可直接进董事会或客户材料 |
+| 单 commit 证据、可复现证据包 | 多仓库组合报告 + 历史留存 |
+| 本地 Web 仪表盘 | 托管扫描、定时快照、趋势线 |
+| `coverage` 采纳诊断 | 策略即代码：按路径 / 按团队分规则 |
+| 本地 checkout 上的 `portfolio` | 组织级汇总，含 SSO 与保留策略 |
+| 单仓库 CI 门禁 | 审计陪同：方法学包 + 评审问答 |
+
+免费档不会事后被阉割，JSON 契约两边一样冻结：今天生成的报告，明年仍能通过同一个 schema。需要商业版，开一个标题带 `commercial` 的 issue。
 
 ## 测试
 
