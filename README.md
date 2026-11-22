@@ -163,9 +163,12 @@ $ echo $?
 | `2` | environment/usage error: not a repo, no commits, bad roster, bad args |
 | `4` | gate breached: agent-signed ratio above `--max-ai-ratio` |
 
-It also ships a **read-only MCP server** (one tool, `repo_authorship_report`,
-stdio, zero dependencies) — see `ghostauthor/mcp_server.py`. It reports; it
-never executes. That is an invariant, not a promise.
+It also ships a **read-only MCP server** (two tools — `repo_authorship_report`
+and `commit_evidence` — stdio, zero dependencies) — see
+`ghostauthor/mcp_server.py`. Both expose the full CLI option surface (scope,
+window, roster, gate) and return bytes that are **identical to the CLI's** for
+the same request. It reports; it never executes. That is an invariant, not a
+promise.
 
 ## Web UI
 
@@ -187,9 +190,15 @@ It binds `127.0.0.1` by default. Enter one or two repository paths — each
 optionally scoped to a ref (`main` vs a feature branch) — plus the same
 options the CLI has: time window, session gap, `--max-ai-ratio` gate, roster
 file or dir. Add a second entry to compare two codebases, or one codebase at
-two refs, side by side. Every count expands to its commit list; the raw
-byte-stable JSON is one click away. Like the CLI and the MCP server, the web
-transport is **read-only**: it reports, it never executes.
+two refs, side by side. Every count expands to its commit list, and every
+commit row drills into its **evidence** — which roster rule matched each
+trailer and why the audit attributed the commit that way; a standalone query
+box covers shas outside the current audit scope. The raw byte-stable JSON is
+one click away. Under the hood the dashboard is two JSON endpoints —
+`/api/audit` and `/api/evidence` — each serving bytes identical to the CLI for
+the same request, so the page and the terminal can never disagree. Like the
+CLI and the MCP server, the web transport is **read-only**: it reports, it
+never executes.
 
 ## Design trade-offs
 
@@ -198,7 +207,7 @@ transport is **read-only**: it reports, it never executes.
 | No LLM anywhere in the verdict path | A reviewer that can be steered by wording will eventually be steered by wording. Verdicts must be re-runnable, auditable, and appealable. |
 | Trailers only — no style detection | Provenance, not guessing. "Unsigned" is a category, not an accusation: unsigned ≠ human. |
 | Stdlib only, zero dependencies | An audit tool must run on the machine it audits. No venv ritual, no supply chain of its own. |
-| Read-only MCP server, one tool | The read side reports; it never executes. That is an invariant, not a promise. |
+| Read-only MCP server, two read-only tools | The read side reports; it never executes. That is an invariant, not a promise. |
 | One write path, opt-in, supervised (v1.0) | The moment a tool can *act*, the risk model changes from "advice" to "supervised decision". So the write path crosses that line **on purpose and visibly**: `ghostauthor sign` is an explicit subcommand (no hook, no default), dry-run by default, idempotent, refuses conflicts, and signs only with identities the roster itself validates. The boundary is written down in [docs/attestation.md](docs/attestation.md). |
 | Exit codes `0/2/4` as a CI contract | A tool nobody can wire into a pipeline is a toy. |
 | Missing ≡ empty, never an exception | Incomplete data is the norm. A tool that crashes on a malformed trailer demands "fill it in completely first" — nobody does that under pressure. |
@@ -345,6 +354,7 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - [x] v1.1.0 — commit-time signing: repo-level `commit-msg` hook via `install-hook` / `uninstall-hook` (signed at commit time — no amend, no sha rewrite; marker-protected against foreign hooks; `--no-verify` is the documented escape hatch) + `lint-roster` (catch-all / cross-agent-overlap warnings, exit 0) + canonical `signing` identities for the builtin roster
 - [x] v1.2.0 — per-commit `evidence` (which roster rule matched each trailer and why — the same attribution code as the audit, so the two can never disagree) + `--bundle` reproducible evidence package (report + evidence + roster snapshot + sha256 manifest, no timestamps) + `roster.match_detail` (reason-carrying match)
 - [x] v1.3.0 — installable from PyPI (`pip install ghostauthor`; OIDC trusted publishing, no token in the repo) + the evidence JSON contract frozen (`schema/evidence.schema.json`, enforced by verify — a mutation goes red) + `docs/roster.md` (writing guide) + `README.zh.md`
+- [x] v1.4.0 — read-side surface parity: the MCP `repo_authorship_report` gains the full option surface (scope, window, roster, gate) and a second read-only tool `commit_evidence`; the web gains `/api/evidence` + an in-dashboard evidence drill-down. Every surface now serves the **same bytes** as the CLI for the same request — parity by construction, not by test, because report/evidence selection is one shared function
 
 ## Tests
 
@@ -371,6 +381,8 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - **Two-branch diff** — `--base` scans git's `base..target` range; an empty range is `no-commits` (never a silent report); `--base` + `--all` is `ref-conflict`; a `-`-leading base is `ref-invalid`
 - **Cross-tab** — per-author rows, per-agent columns: multi-agent commits land in every matched column (the cap invariant), row totals are deduplicated, every cell expands to a commit list
 - **Web parity** — the web transport serves byte-identical JSON to the CLI; request-level errors (bad window/gate/roster) are 400, per-entry errors (not-a-repo 404, no-commits 422) carry their documented codes
+- **MCP parity** — both MCP tools return the CLI's exact bytes for the same request: `repo_authorship_report` mirrors the full option surface, `commit_evidence` mirrors `evidence --format json` (multi-sha input order preserved, no bundle — the server never writes files); request errors carry the CLI's codes, repo errors (`sha-unknown`, `not-a-repo`) are pinned
+- **Web evidence** — `/api/evidence` serves the CLI's `evidence` bytes for scope / multi-sha / window requests; `sha-unknown` is 422, `not-a-repo` is 404, request errors are 400; the dashboard carries the evidence UI (query box + per-sha inline drill-down)
 
 One click runs the whole matrix (roster → unit suite → 3 deterministic
 fixture repos → CLI exit codes → real MCP `initialize`/`tools/list`/
@@ -379,12 +391,20 @@ web server, byte-stable vs the CLI → two-branch diff + cross-tab → CI
 assets → schema freeze, enforced → write path: round-trip / idempotency /
 conflict / default-off → hook: install / sign-at-commit / idempotent /
 conflict / uninstall + roster lint → evidence: audit agreement / byte
-stability / reproducible bundle → evidence freeze, enforced), and
+stability / reproducible bundle → evidence freeze, enforced → MCP surface
+parity: 2 tools, both byte-identical to the CLI, every error code → web
+evidence: `/api/evidence` byte-identical, 400/404/422, UI markers), and
 prints anything it skips and why:
 
 ```bash
 python verify.py
 ```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for the full release history (v0.1.0 →
+present), including the read-side contract-freeze policy and the additive-only
+write path.
 
 ## License
 

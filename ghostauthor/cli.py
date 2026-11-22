@@ -35,8 +35,8 @@ from typing import List, Optional, Tuple
 from . import __version__
 from .engine import DEFAULT_SESSION_GAP_MINUTES, build_report
 from .evidence import (build_bundle, render_evidence_json,
-                       render_evidence_text)
-from .gitparse import GitError, get_commit, iter_commits
+                       render_evidence_text, select_evidence_commits)
+from .gitparse import GitError, iter_commits
 from .lint import lint_roster
 from .models import parse_window_value
 from .report import render_json, render_markdown, render_sarif, render_text
@@ -379,34 +379,18 @@ def evidence_main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     try:
-        if args.shas:
-            commits = [get_commit(args.path, s) for s in args.shas]
-        else:
-            commits = iter_commits(args.path, all_refs=args.all,
-                                   ref=args.ref, base=args.base)
+        # One selection function shared with the MCP commit_evidence tool and
+        # the web /api/evidence endpoint: window + ordering live inside it, so
+        # all three surfaces select the same commits for the same request.
+        commits = select_evidence_commits(
+            args.path, args.shas, all_refs=args.all, ref=args.ref,
+            base=args.base, since=since, until=until)
     except (GitError, ValueError) as exc:
         # GitError covers sha-unknown (an explicit SHA the repo does not
         # hold) exactly like the audit covers an unknown ref: usage error,
         # exit 2, nothing written.
         print(f"error: {exc}", file=sys.stderr)
         return 2
-
-    # Window: since INCLUSIVE, until EXCLUSIVE — the same boundary
-    # semantics as the audit, so evidence and audit cannot disagree about
-    # which commits a window selects.
-    if since is not None or until is not None:
-        windowed = [c for c in commits
-                    if (since is None or c.authored_at >= since)
-                    and (until is None or c.authored_at < until)]
-        if not windowed:
-            print("error: window-empty: no commits within the window",
-                  file=sys.stderr)
-            return 2
-        commits = windowed
-    if not args.shas:
-        # Scan order: deterministic (authored_at, sha), like the report.
-        # Explicit SHAs keep input order: the auditor asks, the tool answers.
-        commits = sorted(commits, key=lambda c: (c.authored_at, c.sha))
 
     if args.bundle is not None:
         bundle_dir = Path(args.bundle)

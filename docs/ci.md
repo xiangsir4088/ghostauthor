@@ -90,6 +90,27 @@ It needs `permissions: pull-requests: write` (included in the template).
 ledger, not a findings list: the SARIF result represents the audit conclusion,
 per-agent counts included in properties.
 
+## Versioning
+
+The composite action is referenced by tag. Two kinds exist:
+
+- **Semver tags** (`v1.3.0`, `v1.4.0`, …) are the release units. Only these
+  can trigger a PyPI publish — the `publish` workflow matches
+  `v[0-9]+.[0-9]+.[0-9]+*` and nothing else.
+- **Floating aliases** are convenience refs that track a major line. Pinning
+  one means "latest stable in this major series": you pick up fixes
+  automatically, at the cost of a moving target. Prefer a semver tag when a
+  pinned, reproducible build matters; use an alias when you want the latest
+  patch.
+
+Declared floating aliases: `v1` (= latest 1.x stable).
+
+`verify` step 17 enforces this: every `uses: xiangsir/ghostauthor@<tag>` in
+the shipped workflow examples and in `action.yml` must name either an existing
+git tag or a declared floating alias above. A reference to a tag that does not
+exist — or to an alias that is not declared here — goes red. This is the check
+that catches a template pointing at a ref that was never created.
+
 ## Invariants (unchanged in CI)
 
 - Exit `0`/`2`/`4` only; the gate is `>` not `>=`.

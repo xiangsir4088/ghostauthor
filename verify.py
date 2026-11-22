@@ -446,6 +446,46 @@ def main() -> int:
             check(f"ci_docs_{name}", name in doc_text,
                   f"docs/ci.md missing {name}")
 
+        # Tag-reference check: every `uses: .../ghostauthor@<tag>` in the
+        # shipped examples + action.yml must name an EXISTING git tag or a
+        # declared floating alias (docs/ci.md). Catches a template pointing
+        # at a ref that was never created (the pr-audit @v1 bug this repo
+        # shipped: self-audit runs the local CLI, so nothing else looked at
+        # the action's own tag reference).
+        import re as _re
+
+        def _tag_refs(text):
+            return _re.findall(r"uses:\s*[\w.-]+/ghostauthor@([\w.-]+)", text)
+
+        aliases = set()
+        for line in doc_text.splitlines():
+            if line.lstrip().startswith("Declared floating aliases:"):
+                aliases = set(_re.findall(r"`([^`]+)`", line))
+        existing = set(subprocess.run(
+            ["git", "tag", "-l"], cwd=str(ROOT), capture_output=True,
+            text=True, encoding="utf-8").stdout.split())
+
+        check("ci_alias_v1_declared", "v1" in aliases,
+              "docs/ci.md must declare the v1 floating alias")
+        real_refs = [(example.name, t)
+                     for t in _tag_refs(example.read_text(encoding="utf-8"))]
+        real_refs += [(action.name, t)
+                      for t in _tag_refs(action.read_text(encoding="utf-8"))]
+        check("ci_tag_refs_found", bool(real_refs),
+              "expected ghostauthor@<tag> references in the shipped examples")
+        for fname, tag in real_refs:
+            check(f"ci_tagref_{fname}_{tag}", tag in existing or tag in aliases,
+                  f"{fname} -> @{tag}: not an existing tag and not a declared "
+                  f"alias (tags={sorted(existing)}; aliases={sorted(aliases)})")
+        # Negative: the validator must discriminate a bogus reference, so the
+        # check can actually go red (delete the alias or typo a tag -> FAIL).
+        def _valid(tag):
+            return tag in existing or tag in aliases
+        check("ci_tagref_negative",
+              _tag_refs("- uses: xiangsir/ghostauthor@v9") == ["v9"]
+              and not _valid("v9") and not _valid("v2-nope"),
+              "tag validator failed to reject a non-existent, undeclared tag")
+
     step("CI assets (action.yml + workflows + docs) consistent", ci_assets_ok)
 
     # 18. schema freeze: report.schema.json is valid, the real CLI output
@@ -1004,6 +1044,231 @@ def main() -> int:
 
     step("evidence freeze (v1.3): schema valid / real output validates / "
          "mutations rejected", evidence_freeze_ok)
+
+    # 23. MCP surface parity (v1.4): the server exposes 2 tools and each is
+    #     byte-identical to the CLI for the same request. The full param
+    #     surface is mirrored, the bundle is absent (the server never writes
+    #     files), and every request-level / repo-level error code is produced.
+    #     The stdio protocol is exercised end-to-end in one process.
+    def mcp_parity_ok():
+        import json as _json
+        base = 1767225600  # mixed fixture commits: BASE_TS + i*3600, i=0..11
+        # Own fixture: the shared `mixed`/`tmp` were removed by the fixtures
+        # finally above — every step after it builds its own temp repo.
+        ev_tmp = Path(tempfile.mkdtemp(prefix="ghostauthor-verify-mcp23-"))
+        mixed = build_mixed(ev_tmp)
+        try:
+            shas = list(reversed(_json.loads(
+                run_cli(mixed, "--format", "json").stdout)["bucket_commit_shas"]
+                ["agent"]))
+
+            def call(tool, **args):
+                return {"method": "tools/call",
+                        "params": {"name": tool, "arguments": args}}
+
+            reqs = [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {}},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list",
+                 "params": {}},
+                {"jsonrpc": "2.0", "id": 3,
+                 **call("repo_authorship_report", path=str(mixed))},
+                {"jsonrpc": "2.0", "id": 4,
+                 **call("repo_authorship_report", path=str(mixed),
+                        since=str(base + 5 * 3600), max_ai_ratio=1.0)},
+                {"jsonrpc": "2.0", "id": 5,
+                 **call("repo_authorship_report", path=str(mixed),
+                        ref="HEAD")},
+                {"jsonrpc": "2.0", "id": 6,
+                 **call("repo_authorship_report",
+                        path=str(ev_tmp / "nope"))},
+                {"jsonrpc": "2.0", "id": 7,
+                 **call("repo_authorship_report", path=str(mixed),
+                        all_refs=True, ref="main")},
+                {"jsonrpc": "2.0", "id": 8,
+                 **call("repo_authorship_report", path=str(mixed),
+                        since="next tuesday")},
+                {"jsonrpc": "2.0", "id": 9,
+                 **call("repo_authorship_report", path=str(mixed), roster="a",
+                        roster_dir="b")},
+                {"jsonrpc": "2.0", "id": 10,
+                 **call("repo_authorship_report", path=str(mixed),
+                        max_ai_ratio=2.0)},
+                {"jsonrpc": "2.0", "id": 11,
+                 **call("commit_evidence", path=str(mixed))},
+                {"jsonrpc": "2.0", "id": 12,
+                 **call("commit_evidence", path=str(mixed), shas=shas)},
+                {"jsonrpc": "2.0", "id": 13,
+                 **call("commit_evidence", path=str(mixed),
+                        since=str(base + 5 * 3600))},
+                {"jsonrpc": "2.0", "id": 14,
+                 **call("commit_evidence", path=str(mixed),
+                        shas=["deadbeef"])},
+                {"jsonrpc": "2.0", "id": 15,
+                 **call("commit_evidence", path=str(ev_tmp / "nope"))},
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            ]
+            stdin = "\n".join(_json.dumps(r) for r in reqs) + "\n"
+            proc = subprocess.run(
+                [sys.executable, "-m", "ghostauthor.mcp_server"],
+                input=stdin, capture_output=True, text=True, cwd=str(ROOT))
+            check("mcp23_rc", proc.returncode == 0, proc.stderr)
+            by_id = {l.get("id"): l for l in
+                     (_json.loads(x) for x in proc.stdout.splitlines()
+                      if x.strip())}
+
+            def text(i):
+                res = by_id[i]["result"]
+                check(f"mcp23_ok_{i}", res["isError"] is False,
+                      res["content"][0]["text"])
+                return res["content"][0]["text"]
+
+            def err(i, prefix):
+                res = by_id[i]["result"]
+                check(f"mcp23_iserr_{i}", res["isError"] is True,
+                      f"id {i} should be an error")
+                msg = res["content"][0]["text"]
+                check(f"mcp23_code_{i}",
+                      msg.startswith(f"error: {prefix}"), msg)
+
+            # two tools, full audit param surface, bundle absent from evidence.
+            tools = {t["name"]: t for t in by_id[2]["result"]["tools"]}
+            check("mcp23_two_tools",
+                  set(tools) == {"repo_authorship_report", "commit_evidence"},
+                  f"tools={set(tools)}")
+            audit_props = set(tools["repo_authorship_report"]
+                              ["inputSchema"]["properties"])
+            check("mcp23_audit_10_params",
+                  audit_props == {"path", "all_refs", "ref", "base", "since",
+                                  "until", "session_gap_minutes",
+                                  "max_ai_ratio", "roster", "roster_dir"},
+                  f"audit params={audit_props}")
+            ev_props = set(
+                tools["commit_evidence"]["inputSchema"]["properties"])
+            check("mcp23_evidence_no_bundle", "bundle" not in ev_props,
+                  f"evidence params={ev_props}")
+
+            # audit byte parity (default / window+gate / ref scope).
+            check("mcp23_audit_default",
+                  text(3) == run_cli(mixed, "--format", "json").stdout)
+            check("mcp23_audit_window",
+                  text(4) == run_cli(mixed, "--format", "json",
+                                     "--since", str(base + 5 * 3600),
+                                     "--max-ai-ratio", "1.0").stdout)
+            check("mcp23_audit_ref",
+                  text(5) == run_cli(mixed, "--format", "json",
+                                     "--ref", "HEAD").stdout)
+            # audit error codes.
+            err(6, "not-a-repo")
+            err(7, "ref-conflict")
+            err(8, "window-bound-invalid")
+            err(9, "roster-conflict")
+            err(10, "gate-limit-invalid")
+
+            # evidence byte parity (scope / multi-sha reversed / window).
+            check("mcp23_ev_scope",
+                  text(11) == run_cli("evidence", mixed, "--format",
+                                      "json").stdout)
+            check("mcp23_ev_shas",
+                  text(12) == run_cli("evidence", mixed, *shas,
+                                      "--format", "json").stdout)
+            check("mcp23_ev_window",
+                  text(13) == run_cli("evidence", mixed, "--format", "json",
+                                      "--since", str(base + 5 * 3600)).stdout)
+            # evidence error codes.
+            err(14, "sha-unknown")
+            err(15, "not-a-repo")
+        finally:
+            shutil.rmtree(ev_tmp, ignore_errors=True)
+
+    step("MCP surface parity (v1.4): 2 tools, audit + commit_evidence "
+         "byte-identical to the CLI, every error code", mcp_parity_ok)
+
+    # 24. Web evidence endpoint: /api/evidence serves the SAME bytes as the
+    #     CLI's `evidence --format json`, maps request/repo errors to
+    #     400/404/422 (sha-unknown is 422), and the index page carries the
+    #     evidence UI. Owns its fixture (the shared one was cleaned up above).
+    def web_evidence_ok():
+        import threading
+        import urllib.error
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+        from ghostauthor.web import Handler
+        ev_tmp = Path(tempfile.mkdtemp(prefix="ghostauthor-verify-web24-"))
+        mixed = build_mixed(ev_tmp)
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            base = f"http://127.0.0.1:{port}"
+
+            def ev_post(body):
+                req = urllib.request.Request(
+                    base + "/api/evidence", data=json.dumps(body).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST")
+                try:
+                    with urllib.request.urlopen(req) as resp:
+                        return resp.status, json.loads(resp.read())
+                except urllib.error.HTTPError as e:
+                    return e.code, json.loads(e.read())
+
+            # the index page carries the evidence UI
+            with urllib.request.urlopen(base + "/") as resp:
+                page = resp.read().decode("utf-8")
+            check("web24_ui_markers",
+                  all(m in page for m in
+                      ("evidence-panel", "evPath", "evShas", "evRun",
+                       "evResults", "drillEvidence", "renderBucketLists")),
+                  "evidence UI markers missing from the index page")
+
+            # full-scope byte parity with the CLI
+            status, body = ev_post({"path": str(mixed)})
+            check("web24_scope_status", status == 200, f"status={status}")
+            check("web24_scope_parity",
+                  body.get("evidence") == run_cli("evidence", mixed,
+                                                  "--format", "json").stdout,
+                  "web evidence differs from the CLI")
+
+            # multi-sha (input order preserved) parity
+            shas = list(reversed(json.loads(
+                run_cli(mixed, "--format", "json").stdout)["bucket_commit_shas"]
+                ["agent"]))
+            status, body = ev_post({"path": str(mixed), "shas": shas})
+            check("web24_shas_parity",
+                  status == 200 and body.get("evidence") ==
+                  run_cli("evidence", mixed, *shas,
+                          "--format", "json").stdout,
+                  f"status={status}")
+
+            # scope-combination (window) parity
+            since = 1767225600 + 5 * 3600
+            status, body = ev_post({"path": str(mixed), "since": str(since)})
+            check("web24_window_parity",
+                  status == 200 and body.get("evidence") ==
+                  run_cli("evidence", mixed, "--format", "json",
+                          "--since", str(since)).stdout,
+                  f"status={status}")
+
+            # error mapping: 400 / 404 / 422
+            st, _ = ev_post({})
+            check("web24_missing_path", st == 400, f"status={st}")
+            st, _ = ev_post({"path": str(mixed), "roster": "a",
+                             "roster_dir": "b"})
+            check("web24_roster_conflict", st == 400, f"status={st}")
+            st, _ = ev_post({"path": str(ev_tmp / "nope")})
+            check("web24_not_a_repo", st == 404, f"status={st}")
+            st, ebody = ev_post({"path": str(mixed), "shas": ["deadbeef"]})
+            check("web24_sha_unknown_422",
+                  st == 422 and ebody["error"]["code"] == "sha-unknown",
+                  f"status={st} body={ebody}")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            shutil.rmtree(ev_tmp, ignore_errors=True)
+
+    step("Web evidence: /api/evidence byte-identical to the CLI, "
+         "400/404/422 mapping, UI markers", web_evidence_ok)
 
     print("=" * 44)
     if SKIPPED:

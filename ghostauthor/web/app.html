@@ -205,6 +205,60 @@ footer{max-width:1180px;margin:0 auto;padding:18px 22px 34px;
   border-top:1px solid var(--border-soft);display:flex;flex-direction:column;
   gap:4px;font-size:12.5px}
 footer .muted{color:var(--dim)}
+
+/* ===== evidence (v1.4) ===== */
+.evidence-panel{margin-bottom:20px}
+.ep-head{display:flex;align-items:baseline;gap:10px;margin-bottom:14px;
+  flex-wrap:wrap}
+.ep-title{font-family:var(--mono);font-size:14px;font-weight:700;color:var(--brand)}
+.ev-row{display:grid;grid-template-columns:1fr 1.3fr 150px auto;gap:12px;
+  align-items:end}
+.ev-row .lab{display:flex;flex-direction:column;gap:6px;font-size:12px;
+  color:var(--muted)}
+.ev-run{display:flex;flex-direction:column;gap:8px;align-items:flex-end}
+.ev-results{margin-top:14px;border-top:1px solid var(--border-soft);
+  padding-top:14px}
+.ev-empty{font-size:13.5px;color:var(--dim);padding:6px 2px}
+.ev-meta{display:flex;gap:18px;flex-wrap:wrap;font-family:var(--mono);
+  font-size:12px;color:var(--muted);margin-bottom:12px}
+.ev-commit{border:1px solid var(--border-soft);border-radius:10px;
+  background:var(--panel2);padding:12px 14px;margin-bottom:10px}
+.ec-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.attr{font-family:var(--mono);font-size:11px;font-weight:700;
+  text-transform:uppercase;border-radius:5px;padding:2px 8px;white-space:nowrap}
+.attr.agent{background:rgba(13,148,136,.14);color:var(--agent)}
+.attr.cosigned{background:rgba(217,119,6,.15);color:var(--cosigned)}
+.attr.unsigned{background:rgba(168,179,194,.22);color:var(--muted)}
+.ec-sha{font-family:var(--mono);font-size:12.5px;color:var(--text)}
+.ec-subj{font-size:13px;color:var(--muted);flex:1;min-width:140px}
+.ec-metamut{font-family:var(--mono);font-size:11.5px;color:var(--dim);
+  margin-top:7px}
+.ev-trailer{margin-top:7px;font-size:12px;color:var(--muted);padding:6px 10px;
+  border-left:3px solid var(--border);background:var(--panel);
+  border-radius:0 6px 6px 0}
+.ev-trailer.raw{font-family:var(--mono);font-size:11.5px;color:var(--text);
+  border-left-color:var(--brand);word-break:break-all}
+.ev-trailer .agent-hit{color:var(--agent);font-family:var(--mono);font-weight:700}
+.ev-trailer .agent-miss{color:var(--cosigned);font-family:var(--mono);
+  font-weight:700}
+.ev-trailer .match{color:var(--brand);font-family:var(--mono);font-size:11px}
+/* inline per-sha evidence, inside a report's commit lists */
+.commitlist{margin:8px 0 4px;border:1px solid var(--border-soft);
+  border-radius:9px;overflow:hidden;background:var(--panel)}
+.citem{border-bottom:1px solid var(--border-soft)}
+.citem:last-child{border-bottom:none}
+.commitrow{display:flex;align-items:center;gap:10px;padding:6px 10px;
+  font-size:12.5px}
+.commitrow:hover{background:var(--panel2)}
+.cr-sha{font-family:var(--mono);color:var(--text);flex-shrink:0}
+.cr-subj{color:var(--muted);flex:1;min-width:100px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.cr-ev{background:transparent;border:1px solid var(--border);
+  color:var(--brand);font-family:var(--mono);font-size:11px;padding:2px 9px;
+  flex-shrink:0}
+.cr-ev:hover{border-color:var(--brand);background:var(--panel2)}
+.inline-ev{padding:2px 12px 12px;background:var(--panel2)}
+.inline-ev .ev-commit{margin-bottom:0;background:var(--panel)}
 </style>
 </head>
 <body>
@@ -262,6 +316,31 @@ footer .muted{color:var(--dim)}
     <div class="actions">
       <button id="run" class="primary" type="button">Run audit</button>
       <span class="muted">read-only — runs <span class="mono">git log</span> only; nothing is written, nothing is executed</span>
+    </div>
+  </section>
+
+  <section class="panel evidence-panel" id="evidence-panel">
+    <div class="ep-head">
+      <span class="ep-title">evidence</span>
+      <span class="muted" style="font-size:13px">why a commit was attributed this way — the same per-commit proof the CLI <span class="mono">evidence</span> command gives</span>
+    </div>
+    <div class="ev-row">
+      <label class="lab">repository
+        <input id="evPath" class="mono" placeholder="defaults to repository A" spellcheck="false" autocomplete="off">
+      </label>
+      <label class="lab">sha(s) — blank = whole scope
+        <input id="evShas" class="mono" placeholder="space or comma separated" spellcheck="false" autocomplete="off">
+      </label>
+      <label class="lab">ref
+        <input id="evRef" class="mono" placeholder="optional" spellcheck="false" autocomplete="off">
+      </label>
+      <div class="ev-run">
+        <label class="chk"><input type="checkbox" id="evAll"> all refs</label>
+        <button id="evRun" class="primary" type="button">Run evidence</button>
+      </div>
+    </div>
+    <div id="evResults" class="ev-results">
+      <div class="ev-empty">Run an audit, or query a sha above. Every commit row in a report also has an inline evidence button.</div>
     </div>
   </section>
 
@@ -468,6 +547,7 @@ function renderReport(r){
     + '<span><i class="dot cosigned"></i>cosigned ' + b.cosigned + ' (' + pct(b.cosigned, total) + ')</span>'
     + '<span><i class="dot unsigned"></i>unsigned ' + b.unsigned + ' (' + pct(b.unsigned, total) + ')</span>'
     + '</div>'
+    + renderBucketLists(rep)
     + '<div class="subhead">agents</div>' + agents
     + '<div class="subhead">sessions</div>' + sess
     + '<div class="subhead">findings (' + ((rep.findings||[]).length) + ')</div>' + finds
@@ -487,6 +567,12 @@ function renderReport(r){
     a.href = url; a.download = dlName; a.click();
     URL.revokeObjectURL(url);
   });
+  p.querySelectorAll('.cr-ev').forEach(btn => {
+    btn.addEventListener('click', function(){
+      const citem = btn.closest('.citem');
+      drillEvidence(r.path, citem.getAttribute('data-sha'), btn, citem);
+    });
+  });
   return p;
 }
 
@@ -502,8 +588,150 @@ function renderEntryError(r){
   return p;
 }
 
+/* ===== evidence (v1.4) ===== */
+function buildEvidencePayload(){
+  const path = $('#evPath').value.trim() || $('#pathA').value.trim() || null;
+  const raw = $('#evShas').value.trim();
+  const shas = raw ? raw.split(/[\s,]+/).filter(Boolean) : null;
+  return {
+    path: path,
+    shas: shas,
+    ref: $('#evRef').value.trim() || null,
+    all: $('#evAll').checked
+  };
+}
+
+async function runEvidence(){
+  const results = $('#evResults');
+  const btn = $('#evRun');
+  btn.disabled = true; btn.textContent = '…';
+  results.innerHTML = '<div class="ev-empty">running…</div>';
+  try {
+    const resp = await fetch('/api/evidence', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(buildEvidencePayload())
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (data.error) { results.innerHTML = renderEvidenceError(data.error); return; }
+    if (data.evidence !== undefined) {
+      const doc = JSON.parse(data.evidence);
+      results.innerHTML = renderEvidenceDocument(doc, data.evidence);
+      const dl = $('#evDl');
+      if (dl) dl.addEventListener('click', function(){
+        // data.evidence is the exact byte string the server sent — the
+        // download is byte-stable, identical to the CLI.
+        const blob = new Blob([data.evidence], {type: 'application/json'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'ghostauthor-evidence.json'; a.click();
+        URL.revokeObjectURL(url);
+      });
+      return;
+    }
+    results.innerHTML = renderEvidenceError(
+      {code: 'bad-response', detail: 'unexpected server response'});
+  } catch(e){
+    results.innerHTML = renderEvidenceError({code: 'network', detail: String(e)});
+  } finally {
+    btn.disabled = false; btn.textContent = 'Run evidence';
+  }
+}
+
+function renderEvidenceDocument(doc, rawBytes){
+  const commits = (doc.evidences || []).map(renderEvidenceCommit).join('');
+  return '<div class="ev-meta"><span>commits ' + doc.commits + '</span>'
+    + '<span>agents in roster ' + doc.agents_in_roster + '</span>'
+    + '<span>roster ' + esc(doc.roster_source) + '</span></div>'
+    + '<div class="rawbar"><button class="mini" type="button" id="evDl">download .json</button>'
+    + '<span class="muted" style="font-size:12px">byte-stable — identical to the CLI</span></div>'
+    + commits
+    + '<details class="raw"><summary>raw json</summary><pre class="mono">'
+    + esc(rawBytes) + '</pre></details>';
+}
+
+function renderEvidenceCommit(ev){
+  const trailers = (ev.trailers || []).map(t => {
+    const hit = t.agent
+      ? '<span class="agent-hit">→ ' + esc(t.agent) + '</span>'
+        + ' <span class="match">' + esc(t.match_reason || '') + '</span>'
+      : '<span class="agent-miss">no roster match</span>';
+    return '<div class="ev-trailer raw">' + esc(t.raw) + '</div>'
+      + '<div class="ev-trailer">name <span class="mono">' + esc(t.name)
+      + '</span> · email <span class="mono">' + esc(t.email || '—')
+      + '</span> · ' + hit + '</div>';
+  }).join('');
+  const meta = (ev.authored_at ? fmtTs(ev.authored_at) + '  ·  ' : '')
+    + esc(ev.author || '(no author)');
+  return '<div class="ev-commit">'
+    + '<div class="ec-head">'
+    + '<span class="attr ' + esc(ev.attribution) + '">' + esc(ev.attribution) + '</span>'
+    + '<span class="ec-sha">' + esc(ev.sha) + '</span>'
+    + '<span class="ec-subj">' + esc(ev.subject) + '</span></div>'
+    + '<div class="ec-metamut">' + meta + '</div>'
+    + (trailers
+       || '<div class="ev-trailer">no Co-Authored-By trailers — attributed unsigned</div>')
+    + '</div>';
+}
+
+function renderEvidenceError(err){
+  return '<div class="entry-err"><div class="ecode">' + esc(err.code || 'error')
+    + '</div><div class="edt">' + esc(err.detail || '') + '</div></div>';
+}
+
+/* inline per-sha drill-down, inside a report's commit lists */
+function renderBucketLists(rep){
+  const buckets = rep.bucket_commit_shas || {};
+  let html = '';
+  ['agent', 'cosigned', 'unsigned'].forEach(key => {
+    const list = buckets[key] || [];
+    if (!list.length) return;
+    const items = list.map(sha =>
+      '<div class="citem" data-sha="' + esc(sha) + '">'
+      + '<div class="commitrow"><span class="cr-sha">' + esc(sha.slice(0, 9))
+      + '</span><span class="cr-subj" data-subj></span>'
+      + '<button class="cr-ev" type="button">evidence</button></div>'
+      + '<div class="inline-ev" hidden></div></div>'
+    ).join('');
+    html += '<details class="raw"><summary>commits · ' + key + ' (' + list.length
+      + ')</summary><div class="commitlist">' + items + '</div></details>';
+  });
+  if (!html) return '';
+  return '<div class="subhead">commit lists</div>' + html;
+}
+
+async function drillEvidence(path, sha, btn, citem){
+  const slot = citem.querySelector('.inline-ev');
+  if (!slot.hidden) { slot.hidden = true; slot.innerHTML = ''; return; }
+  slot.hidden = false;
+  slot.innerHTML = '<div class="ev-empty">loading…</div>';
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/evidence', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path: path, shas: [sha]})
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (data.error) { slot.innerHTML = renderEvidenceError(data.error); return; }
+    const evs = (JSON.parse(data.evidence).evidences) || [];
+    slot.innerHTML = evs.map(renderEvidenceCommit).join('')
+      || '<div class="ev-empty">no evidence</div>';
+    const subj = evs[0] && evs[0].subject;
+    if (subj) citem.querySelector('[data-subj]').textContent = subj;
+  } catch(e){
+    slot.innerHTML = renderEvidenceError({code: 'network', detail: String(e)});
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 function init(){
   $('#run').addEventListener('click', runAudit);
+  $('#evRun').addEventListener('click', runEvidence);
+  ['evPath', 'evShas', 'evRef'].forEach(id => {
+    $('#' + id).addEventListener('keydown', e => { if (e.key === 'Enter') runEvidence(); });
+  });
   $('#toggleB').addEventListener('click', function(){
     const show = $('#entryB').hidden;
     $('#entryB').hidden = !show;

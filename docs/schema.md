@@ -120,16 +120,37 @@ window is a contract error (exit 2), never a silently empty report.
 
 ## MCP surface (frozen with this schema)
 
-One tool, `repo_authorship_report`, stdio JSON-RPC 2.0
-(`protocolVersion` `2025-03-26`):
+Two read-only tools, stdio JSON-RPC 2.0 (`protocolVersion` `2025-03-26`).
+The server never executes anything beyond the read-only `git log` / `git
+show`, and never writes a file. Both return the CLI's exact bytes for the
+same request, so they cannot disagree with it.
+
+`repo_authorship_report` — the full audit:
 
 - **inputs** (all optional): `path` (string, default `.`), `all_refs`
-  (boolean), `session_gap_minutes` (integer, default 360),
-  `max_ai_ratio` (number, 0..1)
+  (boolean), `ref` (string), `base` (string), `since` / `until`
+  (string|integer — the same window semantics as the CLI),
+  `session_gap_minutes` (integer, default 360), `max_ai_ratio` (number, 0..1),
+  `roster` (string), `roster_dir` (string)
 - **output**: the tool's text content is exactly `render_json(report)` —
   the bytes validated by this schema
-- **errors**: `isError: true` with `error: <message>`; the server never
-  executes anything beyond the read-only `git log`
+- **errors**: `isError: true` with `error: <code>: <message>`, carrying the
+  same codes as the CLI (`not-a-repo`, `no-commits`, `ref-conflict`,
+  `ref-invalid`, `window-bound-invalid`, `window-empty`, `roster-conflict`,
+  `roster-error`, `session-gap-invalid`, `gate-limit-invalid`)
+
+`commit_evidence` — per-commit evidence:
+
+- **inputs** (all optional): `path` (string, default `.`), `shas` (array of
+  strings — input order preserved; empty = every commit in scope), `all_refs`
+  (boolean), `ref` (string), `base` (string), `since` / `until`, `roster`
+  (string), `roster_dir` (string). There is deliberately **no `bundle`** —
+  the bundle writes files, and the server never writes files.
+- **output**: the tool's text content is exactly
+  `render_evidence_json(commits, roster)` — the bytes validated by
+  `evidence.schema.json`
+- **errors**: the same codes as the CLI, plus `sha-unknown` (a SHA in `shas`
+  that is not a commit in the repository)
 
 ## Invariants the schema depends on
 

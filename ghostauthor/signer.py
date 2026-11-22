@@ -29,6 +29,7 @@ removed by this tool.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -201,6 +202,17 @@ def _package_parent() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _sh_quote(value: str) -> str:
+    """Quote a value for the generated `sh` hook.
+
+    `shlex.quote` emits POSIX single-quoting, which is also what git's
+    bundled `sh` accepts on Windows. This is strictly safer than the
+    hand-rolled `'...'` wrapping it replaces: a path containing a single
+    quote (legal on POSIX) would have produced a broken hook script.
+    """
+    return shlex.quote(value)
+
+
 def sign_message_file(path: Union[str, Path], roster: Roster,
                       agent_id: str) -> Tuple[str, str, bool]:
     """The commit-msg hook core: apply plan_sign to a commit message FILE.
@@ -243,10 +255,14 @@ def _hook_script(python: str, pkg_parent: Path, agent_id: str,
         "# Do not edit. To change agent/roster: uninstall-hook, then "
         "install-hook again.",
         "# Remove with: ghostauthor uninstall-hook <repo-path>",
-        "PYTHONPATH='" + str(pkg_parent) + "'${PYTHONPATH:+:\"$PYTHONPATH\"}",
+        "# PYTHONPATH is REPLACED, not appended: ghostauthor has zero runtime",
+        "# dependencies, and the separator differs per platform (':' on POSIX,",
+        "# ';' on Windows) -- joining with ':' silently breaks the import chain",
+        "# for a Windows Python as soon as the caller already has a PYTHONPATH.",
+        "PYTHONPATH=" + _sh_quote(str(pkg_parent)),
         "export PYTHONPATH",
-        "exec '" + python + "' -m ghostauthor.cli _commit-msg-hook \"$1\" "
-        f"--agent {agent_id}{roster_part}",
+        "exec " + _sh_quote(python) + " -m ghostauthor.cli _commit-msg-hook "
+        f"\"$1\" --agent {agent_id}{roster_part}",
     ]
     return "\n".join(lines) + "\n"
 

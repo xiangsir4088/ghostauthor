@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__
 from .engine import DEFAULT_SESSION_GAP_MINUTES, build_report
+from .evidence import render_evidence_json, select_evidence_commits
 from .gitparse import GitError, iter_commits
 from .models import parse_window_value
 from .report import render_json
@@ -59,6 +60,15 @@ def _coerce_ratio(value: Any) -> Optional[float]:
     if not (0.0 <= ratio <= 1.0):
         raise ValueError("gate-limit-invalid: must be within [0, 1]")
     return ratio
+
+
+def _err_code(msg: str) -> str:
+    """The leading code of an error message — 'ref-invalid: …' -> 'ref-
+    invalid'. The engine/gitparse/parse error messages all begin with their
+    code, so the web surfaces the SAME code the CLI prints instead of a
+    generic 'value-error'. Falls back to 'value-error' when there is none."""
+    head = msg.split(":", 1)[0].strip()
+    return head if (head and " " not in head and "\n" not in head) else "value-error"
 
 
 def _audit_one(entry: Dict[str, Any], roster: Roster, since: Optional[int],
@@ -169,6 +179,83 @@ def handle_audit(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     return 200, {"results": results}
 
 
+def handle_evidence(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+    """Pure request handler for POST /api/evidence -> (HTTP status, body).
+
+    A single-repo endpoint (unlike /api/audit's 1–2 entries), so errors live
+    at the TOP LEVEL, not inside an entry. The body is the evidence document,
+    built by the SAME selection + render the CLI uses, so it is identical to
+    the CLI's `evidence --format json` for the same request: one source of
+    truth, three skins.
+
+    Status model (mirrors the exit-code contract):
+      400  bad request  — missing path, bad shas, scope-conflict, ref-invalid,
+           window-bound-invalid, roster-conflict, roster-error, window-empty
+      404  not-a-repo   — nothing to audit there
+      422  no-commits / sha-unknown — well-formed request, nothing to show
+    """
+    path = params.get("path")
+    if not path:
+        return 400, {"error": _err("missing-path", "path is required")}
+
+    shas = params.get("shas")
+    if shas is not None:
+        if not isinstance(shas, list) or not all(
+                isinstance(s, str) for s in shas):
+            return 400, {"error": _err("bad-shas",
+                                        "shas must be a list of strings")}
+    else:
+        shas = []
+
+    all_refs = bool(params.get("all"))
+    ref = params.get("ref") or None
+    base = params.get("base") or None
+    if all_refs and ref:
+        return 400, {"error": _err("ref-conflict", "use all or ref, not both")}
+    if all_refs and base:
+        return 400, {"error": _err("ref-conflict", "use all or base, not both")}
+
+    since = until = None
+    try:
+        if params.get("since") not in (None, ""):
+            since = parse_window_value(str(params["since"]))
+        if params.get("until") not in (None, ""):
+            until = parse_window_value(str(params["until"]))
+    except ValueError as exc:
+        return 400, {"error": _err(_err_code(str(exc)), str(exc))}
+
+    roster_file = params.get("roster")
+    roster_dir = params.get("roster_dir")
+    if roster_file and roster_dir:
+        return 400, {"error": _err("roster-conflict",
+                                   "use roster or roster_dir, not both")}
+    try:
+        if roster_dir:
+            roster = load_roster_dir(roster_dir)
+        else:
+            roster = load_roster(roster_file or builtin_roster_path())
+    except RosterError as exc:
+        return 400, {"error": _err("roster-error", str(exc))}
+
+    try:
+        commits = select_evidence_commits(
+            str(path), shas, all_refs=all_refs, ref=ref, base=base,
+            since=since, until=until)
+    except GitError as exc:
+        status = {"not-a-repo": 404, "no-commits": 422,
+                  "sha-unknown": 422}.get(exc.code, 500)
+        return status, {"error": _err(exc.code, str(exc))}
+    except ValueError as exc:
+        # ref-invalid / ref-conflict / window-empty: the request is
+        # well-formed but cannot be answered.
+        return 400, {"error": _err(_err_code(str(exc)), str(exc))}
+
+    # Return the evidence as a pre-serialized STRING (like /api/audit nests
+    # the report) so the bytes are exactly the CLI's — not a re-serialization
+    # that could reorder keys. The client JSON.parses the inner document.
+    return 200, {"evidence": render_evidence_json(commits, roster)}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ghostauthor/" + __version__
     protocol_version = "HTTP/1.1"
@@ -200,7 +287,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": _err("not-found", self.path)})
 
     def do_POST(self) -> None:
-        if self.path != "/api/audit":
+        if self.path not in ("/api/audit", "/api/evidence"):
             self._json(404, {"error": _err("not-found", self.path)})
             return
         try:
@@ -212,7 +299,10 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError) as exc:
             self._json(400, {"error": _err("bad-json", str(exc))})
             return
-        status, body = handle_audit(params)
+        if self.path == "/api/evidence":
+            status, body = handle_evidence(params)
+        else:
+            status, body = handle_audit(params)
         self._json(status, body)
 
     def log_message(self, *args: Any) -> None:

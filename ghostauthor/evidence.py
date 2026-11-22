@@ -18,12 +18,52 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from . import __version__
 from .engine import attribute_commit
+from .gitparse import get_commit, iter_commits
 from .models import CommitInfo
 from .roster import Roster
+
+
+def select_evidence_commits(path, shas: Optional[List[str]] = None,
+                            all_refs: bool = False, ref: Optional[str] = None,
+                            base: Optional[str] = None,
+                            since: Optional[int] = None,
+                            until: Optional[int] = None) -> List[CommitInfo]:
+    """Select the commits an evidence run covers — exactly like the CLI
+    `evidence` command. The CLI, the MCP `commit_evidence` tool and the web
+    `/api/evidence` endpoint all call THIS one function, so the three
+    surfaces can never disagree about which commits they report on (byte
+    parity by construction, not by documentation).
+
+    - `shas` given: fetch each (any commit object in the store), INPUT ORDER
+      preserved. The scope options are ignored — you named the commits.
+    - `shas` omitted: scan the scope (`all_refs` / `ref` / `base`), then sort
+      by `(authored_at, sha)` — the report's deterministic order.
+    - Window (`since` inclusive, `until` exclusive) applies to both cases,
+      so a window selects the same commits here as in the audit.
+
+    Raises GitError (not-a-repo / no-commits / sha-unknown / ...) and
+    ValueError (ref-conflict / ref-invalid / window-empty) exactly like the
+    CLI; each caller translates those into its own error code.
+    """
+    shas = list(shas) if shas else []
+    if shas:
+        commits = [get_commit(str(path), s) for s in shas]
+    else:
+        commits = iter_commits(str(path), all_refs=all_refs, ref=ref, base=base)
+    if since is not None or until is not None:
+        windowed = [c for c in commits
+                    if (since is None or c.authored_at >= since)
+                    and (until is None or c.authored_at < until)]
+        if not windowed:
+            raise ValueError("window-empty: no commits within the window")
+        commits = windowed
+    if not shas:
+        commits = sorted(commits, key=lambda c: (c.authored_at, c.sha))
+    return commits
 
 
 def build_evidence(commits: List[CommitInfo], roster: Roster) -> List[Dict]:
