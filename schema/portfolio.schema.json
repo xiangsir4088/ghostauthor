@@ -9,6 +9,7 @@
     "schema_version",
     "root",
     "window",
+    "gate",
     "totals",
     "repositories",
     "by_agent",
@@ -30,6 +31,17 @@
       "properties": {
         "since": {"type": ["integer", "null"]},
         "until": {"type": ["integer", "null"]}
+      }
+    },
+    "gate": {
+      "type": ["object", "null"],
+      "description": "Present when --max-ai-ratio was given. `breached` is ratio > limit, so a ratio exactly at the limit PASSES — the same boundary rule as the single-repo report.",
+      "additionalProperties": false,
+      "required": ["breached", "limit", "ratio"],
+      "properties": {
+        "breached": {"type": "boolean"},
+        "limit": {"type": "number", "minimum": 0, "maximum": 1},
+        "ratio": {"type": "number", "minimum": 0, "maximum": 1}
       }
     },
     "totals": {

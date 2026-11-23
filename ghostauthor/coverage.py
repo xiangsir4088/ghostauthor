@@ -85,6 +85,25 @@ _COMPILED_MARKERS = tuple(
     for agent_id, label, patterns in _KNOWN_MARKERS
 )
 
+# A marker id names the PRODUCT that wrote the text; a roster id names the
+# SIGNING IDENTITY the write path can use. They are not the same namespace,
+# and conflating them produced a dead end: the diagnosis told a first-time
+# user to run `install-hook --agent claude-code`, while the roster only knows
+# `claude`, so the very first suggestion exited 2 with `sign-agent-unknown`.
+# The mapping is data, and `None` means "the builtin roster has no signing
+# identity for this tool" — the advice then becomes "add the rule first",
+# never a command that cannot run.
+_MARKER_ROSTER_ID: Dict[str, Optional[str]] = {
+    "claude-code": "claude",
+    "cursor": "cursor",
+    "copilot": "copilot",
+    "codex": "codex",
+    "aider": "aider",
+    "gemini-cli": "gemini",
+    "windsurf": None,
+    "devin": None,
+}
+
 # Adoption bands. Boundaries are pinned by tests (>= lower bound).
 _ADOPTION_BANDS: Tuple[Tuple[float, str], ...] = (
     (0.8, "adopted"),   # most commits carry a roster-recognized signature
@@ -317,7 +336,8 @@ def build_coverage(commits: List[CommitInfo], roster: Roster,
         signed_commits=signed, coverage_ratio=ratio, adoption=adoption,
         buckets=buckets, by_author=by_author, by_period=by_period,
         signals=signal_list, unmatched_trailers=unmatched_list,
-        actions=_actions(ratio, total, signed, signal_list, unmatched_list),
+        actions=_actions(ratio, total, signed, signal_list, unmatched_list,
+                         roster),
         first_signed_at=min(signed_ts) if signed_ts else None,
         last_signed_at=max(signed_ts) if signed_ts else None,
         window=({"since": since, "until": until}
@@ -325,14 +345,34 @@ def build_coverage(commits: List[CommitInfo], roster: Roster,
     )
 
 
+def _roster_signing_id(roster: Roster, marker_id: str) -> Optional[str]:
+    """The roster id that can actually sign for a marker, or None.
+
+    Requires BOTH a mapped id and a `signing` identity on that rule: an id
+    that exists but cannot sign would install a hook that fails at commit
+    time, which is worse than saying "add a rule first".
+    """
+    target = _MARKER_ROSTER_ID.get(marker_id)
+    if target is None:
+        return None
+    for agent in roster.agents:
+        if agent.id == target and agent.signing is not None:
+            return target
+    return None
+
+
 def _actions(ratio: float, total: int, signed: int,
              signals: List[CoverageSignal],
-             unmatched: List[UnmatchedTrailer]) -> List[Action]:
+             unmatched: List[UnmatchedTrailer],
+             roster: Roster) -> List[Action]:
     """Turn the diagnosis into a short, ordered plan.
 
     Ordering is by leverage: a roster rule is data and takes one minute; the
     hook is structural; the gate is only safe once coverage is real. Every
     action is derived from measured facts — none is emitted speculatively.
+
+    Every command must RUN against the roster the caller passed: a plan that
+    exits 2 on its first step teaches a new user that the tool is broken.
     """
     out: List[Action] = []
     if unmatched:
@@ -346,13 +386,24 @@ def _actions(ratio: float, total: int, signed: int,
             command="ghostauthor lint-roster --roster <your-roster.json>"))
     if signals:
         top = signals[0]
+        signable = _roster_signing_id(roster, top.agent_id)
+        if signable is not None:
+            command = f"ghostauthor install-hook . --agent {signable}"
+            tail = f"Sign at commit time with the hook (roster id: {signable})."
+        else:
+            # Honest advice beats a command that cannot run: the builtin
+            # roster has no signing identity for this product, so the first
+            # step is adding one, not installing a hook that would fail.
+            command = "ghostauthor install-hook . --agent <agent-id>"
+            tail = ("The roster has no signing identity for this tool yet — "
+                    "add one rule for it, then install the hook with that "
+                    "id (see docs/roster.md).")
         out.append(Action(
             code="install-hook",
             detail=(f"{top.commits} unsigned commit(s) carry a literal "
                     f"{top.label} marker ({top.example!r}) — the tool works, "
-                    "the trailer is simply not being written. Sign at commit "
-                    "time with the hook."),
-            command=f"ghostauthor install-hook . --agent {top.agent_id}"))
+                    f"the trailer is simply not being written. {tail}"),
+            command=command))
     if total and signed == 0:
         out.append(Action(
             code="no-signatures",

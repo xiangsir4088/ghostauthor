@@ -30,7 +30,8 @@ from ghostauthor.options import (OptionError, Scope, resolve_gate,  # noqa: E402
                                  resolve_roster, resolve_session_gap,
                                  resolve_window, scope_from_mapping,
                                  split_code)
-from ghostauthor.web import handle_audit, handle_coverage  # noqa: E402
+from ghostauthor.web import (handle_audit, handle_coverage,  # noqa: E402
+                            handle_evidence)
 
 
 def _cli(*args):
@@ -302,3 +303,88 @@ class SurfaceParityTests(unittest.TestCase):
                                  "session_gap_minutes": 0})
         self.assertEqual(st, 400)
         self.assertEqual(body["error"]["code"], "session-gap-invalid")
+
+
+class OptionTypeTests(unittest.TestCase):
+    """A wrong TYPE is a request error, never a guess.
+
+    Coercion used to hide three real failures:
+
+    * ``"all": "false"`` was truthy, so a client that asked for HEAD got
+      every ref — a confident, wrong answer, which is the worst outcome this
+      project can produce;
+    * ``"ref": 123`` reached ``str.startswith`` and escaped as a 500;
+    * ``"roster_dir": []`` is falsy, so it silently used the builtin roster
+      instead of the one the caller named.
+
+    These tests pin the fix at the request boundary, on every surface.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="ghostauthor-optype-test-"))
+        cls.mixed = build_mixed(cls.tmp)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_string_boolean_is_rejected_not_coerced(self):
+        st, body = handle_audit({"entries": [{"path": str(self.mixed),
+                                              "all": "false"}]})
+        self.assertEqual(st, 200)  # per-entry failure, request is well-formed
+        self.assertEqual(body["results"][0]["status"], 400)
+        self.assertEqual(body["results"][0]["error"]["code"],
+                         "scope-invalid")
+
+        st, body = handle_coverage({"path": str(self.mixed), "all": "false"})
+        self.assertEqual((st, body["error"]["code"]), (400, "scope-invalid"))
+
+        payload, err = _audit_report({"path": str(self.mixed),
+                                      "all_refs": "false"})
+        self.assertIsNone(payload)
+        self.assertTrue(err.startswith("scope-invalid:"))
+
+    def test_a_real_boolean_still_works(self):
+        st, body = handle_audit({"entries": [{"path": str(self.mixed),
+                                              "all": False}]})
+        self.assertEqual(st, 200)
+        self.assertEqual(body["results"][0]["status"], 200)
+        self.assertEqual(body["results"][0]["ref"], "HEAD")
+
+    def test_non_string_ref_is_a_400_not_a_500(self):
+        st, body = handle_audit({"entries": [{"path": str(self.mixed),
+                                              "ref": 123}]})
+        self.assertEqual(body["results"][0]["status"], 400)
+        self.assertEqual(body["results"][0]["error"]["code"], "ref-invalid")
+
+        st, body = handle_evidence({"path": str(self.mixed), "ref": 123})
+        self.assertEqual((st, body["error"]["code"]), (400, "ref-invalid"))
+
+    def test_non_path_roster_is_rejected_not_ignored(self):
+        st, body = handle_audit({"entries": [{"path": str(self.mixed)}],
+                                 "roster": 123})
+        self.assertEqual((st, body["error"]["code"]), (400, "roster-invalid"))
+
+        # [] used to be falsy and silently select the builtin roster.
+        st, body = handle_audit({"entries": [{"path": str(self.mixed)}],
+                                 "roster_dir": []})
+        self.assertEqual((st, body["error"]["code"]), (400, "roster-invalid"))
+
+    def test_booleans_are_not_numbers(self):
+        st, body = handle_audit({"entries": [{"path": str(self.mixed)}],
+                                 "session_gap_minutes": True})
+        self.assertEqual((st, body["error"]["code"]),
+                         (400, "session-gap-invalid"))
+
+        st, body = handle_audit({"entries": [{"path": str(self.mixed)}],
+                                 "max_ai_ratio": True})
+        self.assertEqual((st, body["error"]["code"]),
+                         (400, "gate-limit-invalid"))
+
+    def test_scope_label_is_only_built_after_validation(self):
+        # A rejected entry must not carry a rendered ref label: that is a
+        # half-answer, and a reader could take it as the scope actually used.
+        st, body = handle_audit({"entries": [{"path": str(self.mixed),
+                                              "ref": 123}]})
+        self.assertIsNone(body["results"][0]["ref"])

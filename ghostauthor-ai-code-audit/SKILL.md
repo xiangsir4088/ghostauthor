@@ -12,7 +12,7 @@ license: MIT
 metadata:
   author: xiangsir
   tool: ghostauthor
-  version: "1.5"
+  version: "1.6.1"
 ---
 
 # AI Code Provenance Audit (ghostauthor)
@@ -42,8 +42,9 @@ pip install git+https://atomgit.com/xiangsir/ghostauthor.git
 ```
 
 Prefer the MCP server when the agent is already wired for MCP: it exposes the
-exact same pipeline as read-only tools `repo_authorship_report` (full audit)
-and `commit_evidence` (per-commit evidence). The MCP server never writes a
+exact same pipeline as read-only tools `repo_authorship_report` (full audit),
+`commit_evidence` (per-commit evidence) and `adoption_diagnosis` (why the
+ratio is low: an unrecognized signature versus a missing one). The MCP server never writes a
 file; the `--bundle` artifact lives on the CLI only.
 
 ## Step 1 — Choose the scope

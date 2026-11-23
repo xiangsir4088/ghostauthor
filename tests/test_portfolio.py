@@ -19,9 +19,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ghostauthor.portfolio import (RepoEntry, aggregate_agents,
+from ghostauthor.portfolio import (Portfolio, RepoEntry, aggregate_agents,
                                    aggregate_totals, discover_repos,
-                                   read_repo_list, render_portfolio_html,
+                                   gate_result, read_repo_list,
+                                   render_portfolio_html,
                                    render_portfolio_json,
                                    render_portfolio_text)
 
@@ -169,3 +170,42 @@ class RenderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OrganisationGateTests(unittest.TestCase):
+    """The org-level gate must use the weighted ratio and the report's
+    boundary rule: `ratio > limit` breaches, equality passes."""
+
+    def test_equality_passes_and_above_breaches(self):
+        self.assertFalse(gate_result(0.4, 0.4)["breached"])
+        self.assertTrue(gate_result(0.400001, 0.4)["breached"])
+        self.assertFalse(gate_result(0.0, 0.0)["breached"])
+
+    def test_no_limit_means_no_gate(self):
+        self.assertIsNone(gate_result(0.9, None))
+
+    def test_limit_outside_the_unit_interval_is_rejected(self):
+        for bad in (-0.01, 1.01):
+            with self.assertRaises(ValueError) as ctx:
+                gate_result(0.5, bad)
+            self.assertIn("gate-limit-invalid", str(ctx.exception))
+
+    def _portfolio(self, gate=None):
+        entries = [_ok("alpha", 10, 4), _ok("beta", 30, 12)]
+        return Portfolio(root="/repos", entries=entries,
+                         totals=aggregate_totals(entries),
+                         by_agent=aggregate_agents(entries), errors=[],
+                         gate=gate)
+
+    def test_gate_appears_in_all_three_outputs(self):
+        pf = self._portfolio(gate_result(0.4, 0.39))
+        payload = json.loads(render_portfolio_json(pf))
+        self.assertEqual(payload["gate"],
+                         {"limit": 0.39, "ratio": 0.4, "breached": True})
+        self.assertIn("BREACHED", render_portfolio_text(pf))
+        self.assertIn("BREACHED", render_portfolio_html(pf))
+
+    def test_absent_gate_is_null_not_missing(self):
+        payload = json.loads(render_portfolio_json(self._portfolio()))
+        self.assertIn("gate", payload)
+        self.assertIsNone(payload["gate"])

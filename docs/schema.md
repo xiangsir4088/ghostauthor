@@ -223,7 +223,7 @@ discipline and the same compatibility policy as the report:
 | Output | Schema | Root keys |
 |---|---|---|
 | `ghostauthor coverage --format json` | `schema/coverage.schema.json` | 16 |
-| `ghostauthor portfolio --format json` | `schema/portfolio.schema.json` | 7 |
+| `ghostauthor portfolio --format json` | `schema/portfolio.schema.json` | 8 |
 
 Both declare `schema_version: "1"`, both set
 `additionalProperties: false`, and both evolve additively: a new key keeps
@@ -254,6 +254,10 @@ neither may disagree with the report about one:
 - `portfolio.totals.ai_ratio` is weighted by commit
   (`sum(agent_commits) / sum(total_commits)`); `mean_repo_ratio` is
   reported beside it and is never a substitute.
+- `portfolio.gate` is present (null when `--max-ai-ratio` was not given) and
+  uses the report's boundary verbatim: `breached = ratio > limit`, so a
+  ratio exactly at the limit passes. The field was added additively in
+  v1.6.1; `schema_version` stays `1`.
 
 Enforced by `verify.py` steps 25–26: both schemas are valid within the
 frozen keyword subset, both real CLI outputs validate, the aggregates

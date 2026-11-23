@@ -60,7 +60,7 @@ def _audit_one(entry: Dict[str, Any], roster: Roster, since: Optional[int],
     entry, which is what makes side-by-side comparison useful.
     """
     scope = scope_from_mapping(entry)
-    result: Dict[str, Any] = {"path": entry.get("path"), "ref": scope.label,
+    result: Dict[str, Any] = {"path": entry.get("path"), "ref": None,
                               "report": None, "error": None}
 
     path = entry.get("path")
@@ -69,10 +69,13 @@ def _audit_one(entry: Dict[str, Any], roster: Roster, since: Optional[int],
                                              "path is required"))
         return result
     try:
+        # Validate BEFORE using scope.label: a mistyped scope must be
+        # rejected, not rendered into an answer that looks authoritative.
         scope.validate()
     except OptionError as exc:
         result.update(status=400, error=_err(exc.code, exc.detail))
         return result
+    result["ref"] = scope.label
 
     try:
         commits = iter_commits(str(path), **scope.git_kwargs)
@@ -136,6 +139,15 @@ def handle_audit(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     roster_file = params.get("roster")
     roster_dir = params.get("roster_dir")
 
+    # Validation order mirrors the CLI exactly: roster, then window, then
+    # gap/gate. A request with two faults must name the same fault on every
+    # surface, or "same code for the same request" is only true for
+    # single-fault requests.
+    try:
+        roster = resolve_roster(roster_file, roster_dir)
+    except OptionError as exc:
+        return 400, {"error": _err(exc.code, exc.detail)}
+
     # Shared window bounds (request-level).
     try:
         since, until = resolve_window(params.get("since"), params.get("until"))
@@ -147,12 +159,6 @@ def handle_audit(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         gap = resolve_session_gap(params.get("session_gap_minutes",
                                              DEFAULT_SESSION_GAP_MINUTES))
         max_ratio = resolve_gate(params.get("max_ai_ratio"))
-    except OptionError as exc:
-        return 400, {"error": _err(exc.code, exc.detail)}
-
-    # Load the roster once (request-level).
-    try:
-        roster = resolve_roster(roster_file, roster_dir)
     except OptionError as exc:
         return 400, {"error": _err(exc.code, exc.detail)}
 
@@ -189,6 +195,12 @@ def handle_evidence(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     else:
         shas = []
 
+    # Same order as the CLI: roster, scope, window.
+    try:
+        roster = resolve_roster(params.get("roster"), params.get("roster_dir"))
+    except OptionError as exc:
+        return 400, {"error": _err(exc.code, exc.detail)}
+
     try:
         scope = resolve_scope(params, shas_given=bool(shas))
     except OptionError as exc:
@@ -196,11 +208,6 @@ def handle_evidence(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
 
     try:
         since, until = resolve_window(params.get("since"), params.get("until"))
-    except OptionError as exc:
-        return 400, {"error": _err(exc.code, exc.detail)}
-
-    try:
-        roster = resolve_roster(params.get("roster"), params.get("roster_dir"))
     except OptionError as exc:
         return 400, {"error": _err(exc.code, exc.detail)}
 
@@ -242,6 +249,12 @@ def handle_coverage(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     if not path:
         return 400, {"error": _err("missing-path", "path is required")}
 
+    # Same order as the CLI: roster, scope, window.
+    try:
+        roster = resolve_roster(params.get("roster"), params.get("roster_dir"))
+    except OptionError as exc:
+        return 400, {"error": _err(exc.code, exc.detail)}
+
     try:
         scope = resolve_scope(params)
     except OptionError as exc:
@@ -250,11 +263,6 @@ def handle_coverage(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     since, until = None, None
     try:
         since, until = resolve_window(params.get("since"), params.get("until"))
-    except OptionError as exc:
-        return 400, {"error": _err(exc.code, exc.detail)}
-
-    try:
-        roster = resolve_roster(params.get("roster"), params.get("roster_dir"))
     except OptionError as exc:
         return 400, {"error": _err(exc.code, exc.detail)}
 
@@ -293,6 +301,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if self.close_connection:
+            # Say it out loud when the body was not consumed: the client
+            # must not reuse a connection whose read buffer still holds
+            # unread request bytes.
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
@@ -319,7 +332,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("Content-Length") or 0)
+            if length < 0:
+                # A negative length would reach rfile.read(-1), which reads
+                # until EOF and parks the worker until the socket timeout.
+                self.close_connection = True
+                self._json(400, {"error": _err("bad-body",
+                                               "Content-Length cannot be negative")})
+                return
             if length > _MAX_BODY_BYTES:
+                # The body is deliberately NOT read: refusing the absurd
+                # must not allocate it. That leaves those bytes in the
+                # socket, so the connection cannot be reused — close it, or
+                # the remainder is parsed as the next request line.
+                self.close_connection = True
                 self._json(413, {"error": _err("body-too-large",
                                                f"request body exceeds "
                                                f"{_MAX_BODY_BYTES} bytes")})

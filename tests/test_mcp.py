@@ -1,5 +1,5 @@
-"""MCP handler contract: the positive/negative matrix for _audit_report and
-_evidence_report.
+"""MCP handler contract: the positive/negative matrix for _audit_report,
+_evidence_report and _coverage_report.
 
 Runs in-process (no stdio) — the handlers are pure functions, so the whole
 contract (golden numbers, byte-for-byte identity with the CLI, and every
@@ -20,7 +20,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from examples.make_fixtures import build_agent_heavy, build_mixed  # noqa: E402
-from ghostauthor.mcp_server import _audit_report, _evidence_report  # noqa: E402
+from ghostauthor.mcp_server import (_audit_report, _coverage_report,  # noqa: E402
+                                    _evidence_report)
 
 MIXED_BASE_TS = 1767225600  # matches make_fixtures.BASE_TS
 
@@ -268,3 +269,68 @@ class CommitEvidenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdoptionDiagnosisTests(unittest.TestCase):
+    """The third tool: `coverage` must be reachable by an agent.
+
+    An agent that sees a 0% ratio and cannot ask "why" has only two options:
+    conclude the tool is broken, or guess. The CLI could already answer; this
+    pins that the MCP surface answers with the SAME bytes, so a skill can
+    diagnose the cold-start case without shelling out.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="ghostauthor-mcp-cov-test-"))
+        cls.mixed = build_mixed(cls.tmp)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_default_parity_with_the_cli(self):
+        payload, err = _coverage_report({"path": str(self.mixed)})
+        self.assertIsNone(err)
+        self.assertEqual(payload, _cli("coverage", self.mixed,
+                                       "--format", "json"))
+
+    def test_window_parity_with_the_cli(self):
+        since = MIXED_BASE_TS + 5 * 3600
+        payload, err = _coverage_report({"path": str(self.mixed),
+                                         "since": str(since)})
+        self.assertIsNone(err)
+        self.assertEqual(payload, _cli("coverage", self.mixed, "--format",
+                                       "json", "--since", str(since)))
+
+    def test_ref_parity_with_the_cli(self):
+        payload, err = _coverage_report({"path": str(self.mixed),
+                                         "ref": "HEAD"})
+        self.assertIsNone(err)
+        self.assertEqual(payload, _cli("coverage", self.mixed, "--format",
+                                       "json", "--ref", "HEAD"))
+
+    def test_diagnosis_never_reattributes(self):
+        # The signed count must equal the report's agent bucket: a marker is
+        # a hint, and a hint may never fill a bucket.
+        payload, _ = _coverage_report({"path": str(self.mixed)})
+        cov = json.loads(payload)
+        report = json.loads(_audit_report({"path": str(self.mixed)})[0])
+        self.assertEqual(cov["signed_commits"],
+                         report["commits_by_bucket"]["agent"])
+
+    def test_error_codes(self):
+        self.assertTrue(_coverage_report(
+            {"path": str(self.tmp / "nope")})[1].startswith("not-a-repo:"))
+        self.assertTrue(_coverage_report(
+            {"path": str(self.mixed), "all_refs": True,
+             "ref": "main"})[1].startswith("ref-conflict:"))
+        self.assertTrue(_coverage_report(
+            {"path": str(self.mixed), "all_refs": "false"})[1]
+            .startswith("scope-invalid:"))
+        self.assertTrue(_coverage_report(
+            {"path": str(self.mixed), "since": "next tuesday"})[1]
+            .startswith("window-bound-invalid:"))
+        self.assertTrue(_coverage_report(
+            {"path": str(self.mixed), "roster": "a", "roster_dir": "b"})[1]
+            .startswith("roster-conflict:"))

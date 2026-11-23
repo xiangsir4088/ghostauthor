@@ -9,6 +9,74 @@ The read-side JSON contract is frozen (`schema_version` 1, see
 a rename, deletion or semantic change bumps it. The write path is opt-in and
 additive in every release below — no repository is ever signed by default.
 
+## [1.6.1] — 2026-11-23
+
+**A wrong type is a request error, never a guess.** v1.6 gave the three
+surfaces one definition of each boundary; this release makes that
+definition judge the *type* of the value as well as its range. Coercion
+was hiding three failures, and one of them returned a confident answer to
+a question nobody asked.
+
+### Fixed
+- **`"all": "false"` no longer means "scan every ref".** Python's
+  `bool("false")` is `True`, so a JSON client that sent a stringified
+  boolean silently got the widest possible scope. It is now rejected with
+  `scope-invalid` on the CLI's shared option layer, the MCP server and the
+  web transport alike. The same rule applies to `all_refs`.
+- **A non-string `ref` / `base` is a 400, not a 500.** `{"ref": 123}`
+  reached `str.startswith` and escaped as an unhandled `AttributeError`
+  (`internal-error` over HTTP). It is now `ref-invalid` with the actual
+  type in the detail.
+- **`{"roster_dir": []}` no longer falls back to the builtin roster.**
+  The empty list is falsy, so the old truthiness test silently answered
+  from a roster the caller did not name. Non-path values are now
+  `roster-invalid`.
+- **A boolean is not a minute count or a gate limit.** `session_gap_minutes:
+  true` used to become 1 minute and `max_ai_ratio: true` a gate of 1.0 (an
+  "on" gate that silently did nothing); both are now rejected.
+- **`coverage` no longer tells first-time users to run a command that
+  fails.** The Claude Code marker produced `install-hook --agent
+  claude-code`, while the roster only knows `claude`, so the first
+  suggested step exited 2 with `sign-agent-unknown`. Marker ids are now
+  mapped to roster ids, and a tool with no signing identity in the roster
+  gets "add a rule first" instead of a dead command.
+- **The web transport validates in the CLI's order** (roster → scope →
+  window → gap → gate), so a request with two faults names the same fault
+  on every surface.
+- **A refused body no longer poisons a keep-alive connection.** The 413
+  path read neither the body nor closed the socket, leaving those bytes to
+  be parsed as the next request line. It now answers with `Connection:
+  close`. A negative `Content-Length` is rejected instead of reaching
+  `read(-1)` and parking a worker until the socket timeout.
+
+### Added
+- **MCP `adoption_diagnosis`** — the third read-only tool, byte-identical
+  to `coverage --format json`. An agent that sees a 0% ratio can now ask
+  *why* without shelling out; the diagnosis it returns is the one thing
+  the tool exists to make.
+- **`portfolio --max-ai-ratio`** — an organisation-level gate on the
+  weighted aggregate. The boundary is the report's own (`ratio > limit`
+  breaches, equality passes); the report is produced first, then exit 4.
+  `portfolio.gate` is an additive key (`null` when no limit was given):
+  `schema_version` stays `"1"`.
+- **`python -m ghostauthor`** (`ghostauthor/__main__.py`) — the module
+  entry point now agrees with the console script.
+
+### Release
+- **`publish.yaml` can publish again.** It referenced
+  `pypi-publish/pypi-publish@v1`, a repository that does not exist, and
+  declared no `id-token: write`, so OIDC could not be signed. It now uses
+  `pypa/gh-action-pypi-publish@release/v1`, declares the permission, and
+  fails fast when the pushed tag disagrees with `pyproject.toml` (PyPI
+  never lets a version number be reused).
+- The comment that told maintainers to enter workflow `publish` on PyPI
+  was wrong: the field takes the file name, `publish.yaml`.
+
+**No schema bump** for the report/evidence/coverage contracts; the
+portfolio schema gains one nullable key.
+
+296 → 312 tests / verify 28 steps green.
+
 ## [1.6.0] — 2026-11-23
 
 **One definition of a boundary.** The CLI, the MCP server and the web
@@ -542,6 +610,7 @@ First release.
 - **Unborn-HEAD repositories** (everything staged, nothing committed) are
   classified `no-commits`, not a git failure.
 
+[1.6.1]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.6.1
 [1.6.0]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.6.0
 [1.4.0]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.4.0
 [1.3.0]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.3.0

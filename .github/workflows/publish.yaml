@@ -1,15 +1,30 @@
-# ghostauthor PyPI publish: tag v* -> build -> trusted publishing (OIDC).
+# ghostauthor PyPI publish: tag vX.Y.Z -> build -> trusted publishing (OIDC).
 #
-# No token in this repository: GitHub Actions authenticates to PyPI via
-# OpenID Connect (trusted publishing). The publisher must be enabled once,
-# by a repository admin:
-#   GitHub repo -> Settings -> Developer settings -> OIDC
-#   -> Add trusted publisher -> xiangsir4088/ghostauthor, workflow "publish"
+# No token lives in this repository: GitHub Actions authenticates to PyPI via
+# OpenID Connect. The publisher is configured once, by the account owner, at
+#   https://pypi.org/manage/account/publishing/
+# and must name THIS FILE, not the workflow's display name:
+#   PyPI Project Name : ghostauthor
+#   Owner             : xiangsir4088
+#   Repository name   : ghostauthor
+#   Workflow name     : publish.yaml      <-- the file name, with the extension
+#   Environment name  : (leave empty)
+#
+# The tag filter deliberately requires the full X.Y.Z shape: the floating
+# `v1` tag used by `uses: xiangsir4088/ghostauthor@v1` must NOT trigger a
+# publish, or every move of that tag would try to re-upload an existing
+# version and fail.
 name: publish
 
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+
+permissions:
+  contents: read
+  # Required for OIDC: without it PyPI cannot verify which workflow is
+  # calling, and the upload is rejected before it starts.
+  id-token: write
 
 jobs:
   publish:
@@ -17,16 +32,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      # A tag that disagrees with pyproject.toml would publish a version
+      # nobody asked for, and PyPI never lets you reuse a version number.
+      # Fail before building rather than after uploading.
+      - name: Verify tag matches the package version
+        run: |
+          python - <<'PY'
+          import os, pathlib, re
+          tag = os.environ["GITHUB_REF_NAME"]
+          text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          version = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M).group(1)
+          if tag.lstrip("v") != version:
+              raise SystemExit(f"tag {tag!r} does not match version {version!r}")
+          print(f"tag {tag} matches version {version}")
+          PY
+
       - name: Build distributions
         run: |
           python -m pip install --upgrade build
           python -m build
+
       - name: Check distributions
         run: |
           python -m pip install --upgrade twine
           python -m twine check dist/*
+
       - name: Publish to PyPI (OIDC trusted publishing)
-        uses: pypi-publish/pypi-publish@v1
+        uses: pypa/gh-action-pypi-publish@release/v1

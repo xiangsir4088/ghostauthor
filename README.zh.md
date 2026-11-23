@@ -181,10 +181,10 @@ $ echo $?
 | `2` | 环境/用法错误：不是 repo、无 commit、roster 坏、参数错 |
 | `4` | 门禁超限：agent 签名占比超过 `--max-ai-ratio` |
 
-它还有一个**只读 MCP server**（两个只读工具——`repo_authorship_report` 与
-`commit_evidence`——stdio，零依赖）——见 `ghostauthor/mcp_server.py`。两者都暴露
-CLI 的完整选项面（scope、窗口、roster、gate），并对同一请求返回与 CLI
-**完全相同**的字节。它只报告，从不执行。这是不变量，不是承诺。
+它还有一个**只读 MCP server**（三个只读工具——`repo_authorship_report`、
+`commit_evidence` 与 `adoption_diagnosis`——stdio，零依赖）——见
+`ghostauthor/mcp_server.py`。每个工具都暴露对应 CLI 命令的选项面（scope、窗口、
+roster、gate），并对同一请求返回与 CLI **完全相同**的字节。它只报告，从不执行。这是不变量，不是承诺。
 
 ## Web UI
 
@@ -217,7 +217,7 @@ JSON 端点——`/api/audit` 与 `/api/evidence`——对同一请求各返回�
 | 判定路径上没有任何 LLM | 一个能被措辞带偏的审查者，终将被措辞带偏。判定必须可重跑、可审计、可申诉。 |
 | 只认 trailer——不做风格检测 | 溯源，不是猜测。「unsigned」是一个类别，不是指控：unsigned ≠ 人类。 |
 | 纯标准库、零依赖 | 审计工具必须在被审计的机器上跑。没有 venv 仪式，没有自己的供应链。 |
-| 只读 MCP server，两个只读工具 | 读侧只报告，从不执行。这是不变量，不是承诺。 |
+| 只读 MCP server，三个只读工具 | 读侧只报告，从不执行。这是不变量，不是承诺。 |
 | 唯一写路径、opt-in、受监督（v1.0） | 工具一旦能*行动*，风险模型就从「建议」变成「受监督的决定」。所以写路径**有意且可见**地跨过那条线：`ghostauthor sign` 是显式子命令（无 hook、无默认），默认 dry-run，幂等，冲突拒绝，只用 roster 自己校验过的身份签名。边界写在 [docs/attestation.md](docs/attestation.md)。 |
 | 退出码 `0/2/4` 作为 CI 契约 | 接不进流水线的工具只是玩具。 |
 | 缺失 ≡ 空，从不异常 | 数据不全才是常态。一个遇到坏 trailer 就崩的工具，等于要求「先补全再审计」——没人压力下会那样做。 |
@@ -350,6 +350,7 @@ agent——其中 7 个带公认的 `signing` 身份，所以
 - [x] v1.4.0 — 读侧表面一致性：MCP `repo_authorship_report` 补齐完整选项面（scope、窗口、roster、gate）并新增第二个只读工具 `commit_evidence`；web 新增 `/api/evidence` + 面板内证据钻取。现在每个表面对同一请求都返回**与 CLI 相同的字节**——一致性由构造保证，而非靠测试，因为 report/evidence 的选择是同一个共享函数
 - [x] v1.5.0 — **产品面**：`coverage`（采纳诊断——把「签名没被认出来」和「签名根本没写」分开，且从不猜）、`--format html`（自包含、无时间戳的简报，可发邮件、可存档）、`portfolio`（多仓库聚合，按 commit 加权，部分失败被记录）。纯读侧新增，零 schema bump
 - [x] v1.6.0 — **边界的唯一定义**：scope / 窗口 / roster / 会话间隔 / gate 全部收进 `ghostauthor/options.py`，由 CLI、MCP server、web transport 共同调用。修掉了三份拷贝各自漂移出来的差异——`/api/audit` 会静默忽略 `base`、会丢失 CLI 的错误码、scope 开关的拼法和自己的兄弟端点都不一样。纯读侧，零 schema bump
+- [x] v1.6.1 — **类型是请求错误，不是猜测**：`"all": "false"` 现在被拒绝（`scope-invalid`）而不是被 `bool()` 转成真值——旧行为会静默扫描全部 ref，给出一个看起来很对的错答案；`ref: 123` 从 500 变成 400（`ref-invalid`）；`roster_dir: []` 不再静默回退内置 roster；布尔值不再被当作分钟数或门禁阈值。MCP 新增第三个只读工具 `adoption_diagnosis`（与 `coverage --format json` 字节一致），`portfolio --max-ai-ratio` 支持组织级门禁（exit 4）。`coverage` 的修复建议改用真实 roster id（`claude` 而非 `claude-code`），`python -m ghostauthor` 可用。`portfolio.gate` 加法式新增，`schema_version` 仍为 `1`
 
 ## 免费与商业
 
@@ -370,7 +371,7 @@ CLI 是 MIT，永远都是。对单个仓库而言，它也是完整的产品：
 
 ## 测试
 
-296 个测试钉的是**性质**，不是覆盖率：
+312 个测试钉的是**性质**，不是覆盖率：
 
 - **可复现性** — 同仓库状态 ⇒ 相同报告，与输入顺序无关
 - **trailer 块语义** — 负例：正文里的签名、签名后跟散文、CRLF message、缺邮箱、小写 key、续行
@@ -393,7 +394,7 @@ CLI 是 MIT，永远都是。对单个仓库而言，它也是完整的产品：
 - **双分支 diff** — `--base` 扫 git 的 `base..target` 区间；空区间是 `no-commits`（绝不悄悄空报告）；`--base` + `--all` 是 `ref-conflict`；`-` 开头的 base 是 `ref-invalid`
 - **交叉表** — per-author 行、per-agent 列：多 agent commit 落进每个命中列（cap 不变量），行总数去重，每个格子展开成 commit 列表
 - **Web 对等** — web 传输层提供与 CLI 逐字节相同的 JSON；请求级错误（坏窗口/门禁/roster）是 400，条目级错误（not-a-repo 404、no-commits 422）带文档化的码
-- **MCP 对等** — 两个 MCP 工具对同一请求都返回 CLI 的确切字节：`repo_authorship_report` 镜像完整选项面，`commit_evidence` 镜像 `evidence --format json`（多 sha 输入顺序保留、无 bundle——服务端从不写文件）；请求错误带 CLI 的码，仓库错误（`sha-unknown`、`not-a-repo`）被钉死
+- **MCP 对等** — 三个 MCP 工具对同一请求都返回 CLI 的确切字节：`repo_authorship_report` 镜像完整选项面，`commit_evidence` 镜像 `evidence --format json`（多 sha 输入顺序保留、无 bundle——服务端从不写文件），`adoption_diagnosis` 镜像 `coverage --format json`（agent 看到 0% 时可以直接问「为什么」，不必退回 shell）；请求错误带 CLI 的码，仓库错误（`sha-unknown`、`not-a-repo`）被钉死
 - **Web 证据** — `/api/evidence` 对 scope / 多 sha / 窗口请求返回 CLI `evidence` 的字节；`sha-unknown` 是 422、`not-a-repo` 是 404、请求错误是 400；面板带证据 UI（查询框 + 逐 sha 内联钻取）
 - **选项一致性** — scope / 窗口 / roster / 会话间隔 / gate 只定义一次（`ghostauthor/options.py`），三个表面共同调用：同一个坏请求在 CLI、MCP server、web transport 上得到**同一个错误码**；web 对同一 scope 返回与 CLI **完全相同的字节**（含两分支 diff）；`all` 与 `all_refs` 处处同义；非法条目是 `400`，绝不是未捕获异常
 - **字节一致是按字节比的** — web 把报告作为 CLI 的确切字节串返回，断言比的是**原始字符串**而不是解析后的 dict：重新序列化（键序不同、缩进不同）解析后是同一个东西，能骗过 dict 比较，却让这个声明变成假的
@@ -408,7 +409,7 @@ roster 目录合并 → SARIF → live web server 与 CLI 字节稳定 → 双�
 diff + 交叉表 → CI 资产 → schema 冻结（强制）→ 写路径：round-trip /
 幂等 / 冲突 / 默认关闭 → hook：安装 / commit 时刻签名 / 幂等 / 冲突 /
 卸载 + roster lint → evidence：审计一致性 / 字节稳定 / 可复现 bundle →
-evidence 冻结（强制）→ MCP 表面一致性：2 个工具、都与 CLI 字节相同、每个
+evidence 冻结（强制）→ MCP 表面一致性：3 个工具、每个都与 CLI 字节相同、每个
 错误码 → web evidence：`/api/evidence` 字节相同、400/404/422、UI 标记），
 并打印跳过了什么、为什么：
 

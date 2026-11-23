@@ -1107,11 +1107,11 @@ def main() -> int:
     step("evidence freeze (v1.3): schema valid / real output validates / "
          "mutations rejected", evidence_freeze_ok)
 
-    # 23. MCP surface parity (v1.4): the server exposes 2 tools and each is
-    #     byte-identical to the CLI for the same request. The full param
-    #     surface is mirrored, the bundle is absent (the server never writes
-    #     files), and every request-level / repo-level error code is produced.
-    #     The stdio protocol is exercised end-to-end in one process.
+    # 23. MCP surface parity (v1.4 + v1.6.1): the server exposes 3 tools and
+    #     each is byte-identical to the CLI for the same request. The full
+    #     param surface is mirrored, the bundle is absent (the server never
+    #     writes files), and every request-level / repo-level error code is
+    #     produced. The stdio protocol is exercised end-to-end in one process.
     def mcp_parity_ok():
         import json as _json
         base = 1767225600  # mixed fixture commits: BASE_TS + i*3600, i=0..11
@@ -1168,6 +1168,13 @@ def main() -> int:
                         shas=["deadbeef"])},
                 {"jsonrpc": "2.0", "id": 15,
                  **call("commit_evidence", path=str(ev_tmp / "nope"))},
+                {"jsonrpc": "2.0", "id": 16,
+                 **call("adoption_diagnosis", path=str(mixed))},
+                {"jsonrpc": "2.0", "id": 17,
+                 **call("adoption_diagnosis", path=str(mixed),
+                        since=str(base + 5 * 3600))},
+                {"jsonrpc": "2.0", "id": 18,
+                 **call("adoption_diagnosis", path=str(ev_tmp / "nope"))},
                 {"jsonrpc": "2.0", "method": "notifications/initialized"},
             ]
             stdin = "\n".join(_json.dumps(r) for r in reqs) + "\n"
@@ -1193,10 +1200,12 @@ def main() -> int:
                 check(f"mcp23_code_{i}",
                       msg.startswith(f"error: {prefix}"), msg)
 
-            # two tools, full audit param surface, bundle absent from evidence.
+            # three tools, full audit param surface, bundle absent from
+            # evidence, no gate/session knob on the diagnosis.
             tools = {t["name"]: t for t in by_id[2]["result"]["tools"]}
-            check("mcp23_two_tools",
-                  set(tools) == {"repo_authorship_report", "commit_evidence"},
+            check("mcp23_three_tools",
+                  set(tools) == {"repo_authorship_report", "commit_evidence",
+                                 "adoption_diagnosis"},
                   f"tools={set(tools)}")
             audit_props = set(tools["repo_authorship_report"]
                               ["inputSchema"]["properties"])
@@ -1209,6 +1218,12 @@ def main() -> int:
                 tools["commit_evidence"]["inputSchema"]["properties"])
             check("mcp23_evidence_no_bundle", "bundle" not in ev_props,
                   f"evidence params={ev_props}")
+            cov_props = set(
+                tools["adoption_diagnosis"]["inputSchema"]["properties"])
+            check("mcp23_coverage_params",
+                  cov_props == {"path", "all_refs", "ref", "base", "since",
+                                "until", "roster", "roster_dir"},
+                  f"coverage params={cov_props}")
 
             # audit byte parity (default / window+gate / ref scope).
             check("mcp23_audit_default",
@@ -1240,11 +1255,21 @@ def main() -> int:
             # evidence error codes.
             err(14, "sha-unknown")
             err(15, "not-a-repo")
+
+            # diagnosis byte parity (default / window) + its error code.
+            check("mcp23_cov_default",
+                  text(16) == run_cli("coverage", mixed, "--format",
+                                      "json").stdout)
+            check("mcp23_cov_window",
+                  text(17) == run_cli("coverage", mixed, "--format", "json",
+                                      "--since", str(base + 5 * 3600)).stdout)
+            err(18, "not-a-repo")
         finally:
             shutil.rmtree(ev_tmp, ignore_errors=True)
 
-    step("MCP surface parity (v1.4): 2 tools, audit + commit_evidence "
-         "byte-identical to the CLI, every error code", mcp_parity_ok)
+    step("MCP surface parity (v1.4 + v1.6.1): 3 tools — audit, evidence, "
+         "adoption diagnosis — byte-identical to the CLI, every error code",
+         mcp_parity_ok)
 
     # 24. Web evidence endpoint: /api/evidence serves the SAME bytes as the
     #     CLI's `evidence --format json`, maps request/repo errors to
@@ -1488,6 +1513,27 @@ def main() -> int:
                   sum(a["commits"] for a in payload["by_agent"]) ==
                   sum(sum(a["commits"] for a in r["agents"]) for r in ok),
                   "agent rollup does not match per-repo detail")
+
+            # Organisation gate (v1.6.1): weighted ratio, report boundary
+            # rule, exit 4 on breach — the report is still produced.
+            gated = run_cli("portfolio", pf_tmp, "--format", "json",
+                            "--max-ai-ratio", "0.0")
+            check("pf_gate_exit4", gated.returncode == 4,
+                  f"rc={gated.returncode} {gated.stderr}")
+            gpayload = json.loads(gated.stdout)
+            check("pf_gate_shape",
+                  gpayload["gate"]["breached"] is True
+                  and gpayload["gate"]["limit"] == 0.0
+                  and gpayload["gate"]["ratio"] == totals["ai_ratio"],
+                  str(gpayload.get("gate")))
+            check("pf_gate_schema", validate(gpayload, pf_schema) == [],
+                  str(validate(gpayload, pf_schema)))
+            passed = run_cli("portfolio", pf_tmp, "--max-ai-ratio", "1.0")
+            check("pf_gate_pass_exit0", passed.returncode == 0,
+                  f"rc={passed.returncode} {passed.stderr}")
+            invalid = run_cli("portfolio", pf_tmp, "--max-ai-ratio", "1.5")
+            check("pf_gate_invalid_exit2", invalid.returncode == 2,
+                  f"rc={invalid.returncode}")
 
             # A path that is not a repository is recorded, not fatal.
             proc = run_cli("portfolio", pf_tmp, "--repos-file",

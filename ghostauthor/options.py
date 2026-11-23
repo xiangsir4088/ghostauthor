@@ -39,6 +39,7 @@ MCP `isError`) without re-deriving the code from the text.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -102,7 +103,7 @@ class Scope:
         return {"all_refs": self.all_refs, "ref": self.ref, "base": self.base}
 
     def validate(self) -> "Scope":
-        """Raise OptionError on a conflicting or malformed scope.
+        """Raise OptionError on a conflicting, malformed or mistyped scope.
 
         - `all_refs` together with `ref` or `base` is a conflict: the
           request names two different scopes.
@@ -110,7 +111,19 @@ class Scope:
           names cannot start with a dash, and a refspec that looks like an
           option could be misread as one. This matters most on the
           network-facing web transport.
+        - **types are checked, not coerced.** A JSON client that sends
+          ``"all": "false"`` is asking for *false*; Python's ``bool("false")``
+          is ``True``, so silently coercing would scan every ref and return
+          a confident, wrong answer. ``"123"`` as a ref is likewise rejected
+          instead of being stringified into a ref that cannot exist. The
+          project's rule is that a wrong answer which looks right is the
+          worst outcome, so a wrong TYPE is a request error, never a guess.
         """
+        if not isinstance(self.all_refs, bool):
+            raise OptionError(
+                "scope-invalid",
+                "all/all_refs must be a boolean (true/false), not "
+                f"{type(self.all_refs).__name__}")
         if self.all_refs and self.ref:
             raise OptionError("ref-conflict",
                               "use all_refs or ref, not both")
@@ -118,14 +131,20 @@ class Scope:
             raise OptionError("ref-conflict",
                               "use all_refs or base, not both")
         for name, value in (("ref", self.ref), ("base", self.base)):
-            if value is not None and value.startswith("-"):
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                raise OptionError(
+                    "ref-invalid",
+                    f"{name} must be a string, not {type(value).__name__}")
+            if value.startswith("-"):
                 raise OptionError("ref-invalid",
                                   f"{name} cannot start with '-'")
         return self
 
 
 def scope_from_mapping(params: Mapping[str, Any]) -> Scope:
-    """Build a Scope from a request mapping.
+    """Build a Scope from a request mapping — mapping only, NO validation.
 
     ``all`` and ``all_refs`` are accepted as **synonyms**. The audit
     endpoint historically used `all_refs` and the evidence and coverage
@@ -136,13 +155,20 @@ def scope_from_mapping(params: Mapping[str, Any]) -> Scope:
     When BOTH spellings are present, an explicit `all_refs` wins — so a
     stale `all: true` left over in a request cannot override a deliberate
     `all_refs: false`.
+
+    Values are passed through **untouched** on purpose: no ``bool()`` and no
+    ``str()``. Coercion here is what turned ``"all": "false"`` into "scan
+    every ref" and ``"ref": 123`` into an AttributeError. Types are judged
+    in `Scope.validate`, where the caller can turn them into a 400.
     """
-    raw = (params.get("all_refs") if "all_refs" in params
-           else params.get("all"))
+    if "all_refs" in params and params.get("all_refs") is not None:
+        raw = params.get("all_refs")
+    else:
+        raw = params.get("all")
     return Scope(
-        all_refs=bool(raw),
-        ref=(params.get("ref") or None),
-        base=(params.get("base") or None),
+        all_refs=False if raw is None else raw,
+        ref=params.get("ref"),
+        base=params.get("base"),
     )
 
 
@@ -192,7 +218,16 @@ def resolve_roster(roster_path: Optional[str] = None,
     `roster` and `roster_dir` together is a conflict. A roster that fails
     validation is **rejected, never repaired** — and the rejection keeps
     the validator's own rule id, so the operator sees which rule failed.
+
+    A non-path value (a number, a list, an object) is a request error, not
+    a fallback: ``[]`` is falsy, so a truthiness test used to route it to
+    the builtin roster and answer a question the caller did not ask.
     """
+    for name, value in (("roster", roster_path), ("roster_dir", roster_dir)):
+        if value is not None and not isinstance(value, (str, os.PathLike)):
+            raise OptionError(
+                "roster-invalid",
+                f"{name} must be a path string, not {type(value).__name__}")
     if roster_path and roster_dir:
         raise OptionError("roster-conflict",
                           "use roster or roster_dir, not both")
@@ -210,7 +245,12 @@ def resolve_session_gap(gap: Any) -> int:
     A non-integral value is rejected rather than truncated: `int(1.9)` is
     `1`, so silently truncating would accept a gap the CLI's own argparse
     (`type=int`) refuses — one surface accepting what another rejects.
+    A boolean is rejected too: JSON `true` is not a number of minutes, even
+    though Python's `bool` is an `int` subclass.
     """
+    if isinstance(gap, bool):
+        raise OptionError("session-gap-invalid",
+                          "session_gap_minutes must be an integer")
     if isinstance(gap, float) and not gap.is_integer():
         raise OptionError("session-gap-invalid",
                           "session_gap_minutes must be an integer")
@@ -229,8 +269,13 @@ def resolve_gate(max_ratio: Any) -> Optional[float]:
 
     None or an empty string means the gate is off. A ratio exactly at the
     limit is a PASS — the comparison itself lives in `engine.build_report`
-    and is pinned by tests.
+    and is pinned by tests. A boolean is rejected: JSON `true` would become
+    a gate of 1.0 (off by accident), and an "on" gate that silently does
+    nothing is worse than a rejected request.
     """
+    if isinstance(max_ratio, bool):
+        raise OptionError("gate-limit-invalid",
+                          "max-ai-ratio must be a number in [0, 1]")
     if max_ratio is None or max_ratio == "":
         return None
     try:

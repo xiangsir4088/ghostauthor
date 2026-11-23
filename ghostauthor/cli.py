@@ -579,6 +579,9 @@ def _build_portfolio_parser() -> argparse.ArgumentParser:
                    help="include commits with authored_at >= BOUND")
     p.add_argument("--until", metavar="BOUND",
                    help="include commits with authored_at < BOUND (exclusive)")
+    p.add_argument("--max-ai-ratio", type=float, default=None, metavar="X",
+                   help="fail (exit 4) when the weighted aggregate ratio "
+                        "exceeds X (0..1); a ratio exactly at X passes")
     p.add_argument("--session-gap", type=int,
                    default=DEFAULT_SESSION_GAP_MINUTES, metavar="MINUTES")
     p.add_argument("--roster",
@@ -606,6 +609,7 @@ def portfolio_main(argv: Optional[List[str]] = None) -> int:
 
     try:
         since, until = resolve_window(args.since, args.until)
+        max_ratio = resolve_gate(args.max_ai_ratio)
     except OptionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -624,7 +628,8 @@ def portfolio_main(argv: Optional[List[str]] = None) -> int:
 
     pf = build_portfolio(paths, roster, ref=args.ref,
                          session_gap_minutes=args.session_gap,
-                         since=since, until=until, root=args.root)
+                         since=since, until=until, root=args.root,
+                         max_ai_ratio=max_ratio)
 
     if int(pf.totals["scanned"]) == 0:
         # Every repository failed. That is an environment error, not a
@@ -642,7 +647,9 @@ def portfolio_main(argv: Optional[List[str]] = None) -> int:
         Path(args.out).write_text(text, encoding="utf-8")
     else:
         sys.stdout.write(text)
-    return 0
+    # Same contract as the single-repo audit: the report is produced first,
+    # then the exit code states the verdict. 4 = gate breached.
+    return 4 if (pf.gate is not None and pf.gate["breached"]) else 0
 
 
 def _load_roster(args: argparse.Namespace) -> Tuple[Optional[Roster],

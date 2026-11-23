@@ -5,7 +5,7 @@ executes anything beyond the read-only `git log` inside the repository
 it is pointed at. The tool reports; it does not decide and it does not
 act. ("永不自动执行" is an invariant, not a promise.)
 
-Two tools, both pure reads over the SAME pipeline as the CLI:
+Two tools were the v1.4 surface; v1.6.1 adds a third read-only tool:
 
 * `repo_authorship_report` — the full audit. Its JSON is byte-identical to
   the CLI's `--format json` for the same repo state and options (the report
@@ -13,6 +13,10 @@ Two tools, both pure reads over the SAME pipeline as the CLI:
 * `commit_evidence` — per-commit evidence, byte-identical to the CLI's
   `evidence --format json`. It has NO bundle parameter: a bundle writes
   files, and the server never writes files.
+* `adoption_diagnosis` — why the ledger looks the way it does, byte-identical
+  to the CLI's `coverage --format json`. Without it an agent could see a 0%
+  ratio and had no way to learn that the cause is a missing signature rather
+  than a missing convention — the one diagnosis the tool exists to make.
 
 Request semantics (scope, window, roster, session gap, gate) are NOT
 parsed here: they come from `options`, the module the CLI and the web
@@ -31,6 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from . import __version__
+from .coverage import build_coverage, render_coverage_json
 from .engine import DEFAULT_SESSION_GAP_MINUTES, build_report
 from .evidence import render_evidence_json, select_evidence_commits
 from .gitparse import GitError, iter_commits
@@ -163,6 +168,51 @@ def _evidence_report(args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]
     return render_evidence_json(commits, roster), None
 
 
+def _coverage_report(args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """Pure adoption-diagnosis handler: args -> (coverage_json | None, error).
+
+    Mirrors the CLI `coverage` command through the SAME option resolution,
+    commit selection, `build_coverage` and `render_coverage_json`, so the
+    output is byte-identical to `coverage --format json`. Never raises: every
+    failure is returned as (None, "<code>: <msg>").
+
+    This is the diagnosis, not an attribution: markers are hints, they never
+    change a bucket, and a commit with no marker produces no claim.
+    """
+    path = args.get("path") or "."
+
+    try:
+        roster = resolve_roster(args.get("roster"), args.get("roster_dir"))
+    except OptionError as exc:
+        return None, str(exc)
+
+    scope = _scope(args)
+    try:
+        scope.validate()
+    except OptionError as exc:
+        return None, str(exc)
+
+    try:
+        since, until = resolve_window(args.get("since"), args.get("until"))
+    except OptionError as exc:
+        return None, str(exc)
+
+    try:
+        commits = iter_commits(str(path), **scope.git_kwargs)
+    except (GitError, ValueError) as exc:
+        return None, str(exc)
+
+    try:
+        coverage = build_coverage(
+            commits, roster,
+            repo_path=str(Path(path).resolve()),
+            ref=scope.label,
+            since=since, until=until)
+    except ValueError as exc:
+        return None, str(exc)
+    return render_coverage_json(coverage), None
+
+
 TOOL: Dict[str, Any] = {
     "name": "repo_authorship_report",
     "description": (
@@ -291,7 +341,63 @@ COMMIT_EVIDENCE_TOOL: Dict[str, Any] = {
     },
 }
 
-_TOOLS = [TOOL, COMMIT_EVIDENCE_TOOL]
+ADOPTION_TOOL: Dict[str, Any] = {
+    "name": "adoption_diagnosis",
+    "description": (
+        "Explain why a repository's AI-provenance ratio is low: which "
+        "commits carry a signature the roster does not recognize (a roster "
+        "fix) versus which carry no signature at all (a write-path fix). "
+        "Known tool markers are reported as hints, never as attributions. "
+        "Read-only. The JSON is byte-identical to the CLI's "
+        "`coverage --format json` for the same repo and options."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Repository path (default: current working directory)",
+            },
+            "all_refs": {
+                "type": "boolean",
+                "description": "Scope: all refs instead of HEAD (mutually "
+                               "exclusive with ref and base)",
+            },
+            "ref": {
+                "type": "string",
+                "description": "Scope: one ref instead of HEAD",
+            },
+            "base": {
+                "type": "string",
+                "description": "Scope: git range base..target (mutually "
+                               "exclusive with all_refs)",
+            },
+            "since": {
+                "type": ["string", "integer"],
+                "description": "Window bound, same semantics as the report "
+                               "(inclusive)",
+            },
+            "until": {
+                "type": ["string", "integer"],
+                "description": "Window bound, same semantics as the report "
+                               "(exclusive)",
+            },
+            "roster": {
+                "type": "string",
+                "description": "Path to a custom roster JSON (default: builtin; "
+                               "mutually exclusive with roster_dir)",
+            },
+            "roster_dir": {
+                "type": "string",
+                "description": "Directory of roster JSON files to merge "
+                               "(mutually exclusive with roster)",
+            },
+        },
+        "required": [],
+    },
+}
+
+_TOOLS = [TOOL, COMMIT_EVIDENCE_TOOL, ADOPTION_TOOL]
 
 
 def _error_content(message: str) -> Dict[str, Any]:
@@ -324,6 +430,8 @@ def _handle(method: str, params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             payload, error = _audit_report(args)
         elif name == COMMIT_EVIDENCE_TOOL["name"]:
             payload, error = _evidence_report(args)
+        elif name == ADOPTION_TOOL["name"]:
+            payload, error = _coverage_report(args)
         else:
             return _error_content(f"unknown tool: {name!r}")
         if error is not None:

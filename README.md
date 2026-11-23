@@ -194,11 +194,11 @@ $ echo $?
 | `2` | environment/usage error: not a repo, no commits, bad roster, bad args |
 | `4` | gate breached: agent-signed ratio above `--max-ai-ratio` |
 
-It also ships a **read-only MCP server** (two tools — `repo_authorship_report`
-and `commit_evidence` — stdio, zero dependencies) — see
-`ghostauthor/mcp_server.py`. Both expose the full CLI option surface (scope,
-window, roster, gate) and return bytes that are **identical to the CLI's** for
-the same request. It reports; it never executes. That is an invariant, not a
+It also ships a **read-only MCP server** (three tools — `repo_authorship_report`,
+`commit_evidence` and `adoption_diagnosis` — stdio, zero dependencies) — see
+`ghostauthor/mcp_server.py`. Each exposes its CLI command's option surface
+(scope, window, roster, gate) and returns bytes that are **identical to the
+CLI's** for the same request. It reports; it never executes. That is an invariant, not a
 promise.
 
 ## Web UI
@@ -414,7 +414,7 @@ schema next year. If you need the commercial surface, open an issue with
 
 ## Tests
 
-296 tests pin **properties**, not coverage:
+312 tests pin **properties**, not coverage:
 
 - **Reproducibility** — same repo state ⇒ identical report, regardless of input order
 - **Trailer-block semantics** — negative cases: signature in the body, signature followed by prose, CRLF messages, missing email, lowercase keys, continuation lines
@@ -437,12 +437,13 @@ schema next year. If you need the commercial surface, open an issue with
 - **Two-branch diff** — `--base` scans git's `base..target` range; an empty range is `no-commits` (never a silent report); `--base` + `--all` is `ref-conflict`; a `-`-leading base is `ref-invalid`
 - **Cross-tab** — per-author rows, per-agent columns: multi-agent commits land in every matched column (the cap invariant), row totals are deduplicated, every cell expands to a commit list
 - **Web parity** — the web transport serves byte-identical JSON to the CLI; request-level errors (bad window/gate/roster) are 400, per-entry errors (not-a-repo 404, no-commits 422) carry their documented codes
-- **MCP parity** — both MCP tools return the CLI's exact bytes for the same request: `repo_authorship_report` mirrors the full option surface, `commit_evidence` mirrors `evidence --format json` (multi-sha input order preserved, no bundle — the server never writes files); request errors carry the CLI's codes, repo errors (`sha-unknown`, `not-a-repo`) are pinned
+- **MCP parity** — all three MCP tools return the CLI's exact bytes for the same request: `repo_authorship_report` mirrors the full option surface, `commit_evidence` mirrors `evidence --format json` (multi-sha input order preserved, no bundle — the server never writes files), `adoption_diagnosis` mirrors `coverage --format json` (so an agent that sees 0% can ask *why* without shelling out); request errors carry the CLI's codes, repo errors (`sha-unknown`, `not-a-repo`) are pinned
 - **Web evidence** — `/api/evidence` serves the CLI's `evidence` bytes for scope / multi-sha / window requests; `sha-unknown` is 422, `not-a-repo` is 404, request errors are 400; the dashboard carries the evidence UI (query box + per-sha inline drill-down)
 - **Adoption diagnosis** — `coverage` bands are inclusive at the lower bound (0.2 / 0.8) and zero is its own band (`none`, never `minimal`); an unrecognized trailer is reported as a signature with its fix, a known tool marker is a hint on an unsigned commit and never changes a bucket, and a commit with no marker produces no claim at all; author rows reconcile with the bucket totals; the JSON is byte-stable and validates against `schema/coverage.schema.json`
-- **Portfolio weighting** — the aggregate is `sum(signed)/sum(commits)`, never a mean of per-repository ratios (pinned with 1 commit at 100% vs 99 at 0%); a failed repository is counted, named and excluded from the totals instead of aborting the run; all repositories failing is `portfolio-empty` (exit 2); per-repository agent detail expands the rollup
+- **Portfolio weighting** — the aggregate is `sum(signed)/sum(commits)`, never a mean of per-repository ratios (pinned with 1 commit at 100% vs 99 at 0%); a failed repository is counted, named and excluded from the totals instead of aborting the run; all repositories failing is `portfolio-empty` (exit 2); per-repository agent detail expands the rollup; `--max-ai-ratio` applies the report's boundary to the aggregate (`ratio > limit` breaches, equality passes) and exits 4 after producing the report
 - **HTML brief** — byte-stable (no generation timestamp), self-contained (no `<script>`, no remote URL), every interpolated value escaped, and the method statement travels with the document — the properties that let it sit next to the JSON as evidence rather than as a screenshot
 - **Web coverage** — `/api/coverage` serves the CLI's `coverage` bytes for the same request; the dashboard shows an inline diagnosis prompt only below 20% coverage (a healthy ledger is never nagged), and its error mapping matches the exit codes
+- **A wrong type is a request error, never a guess** — `"all": "false"` is rejected (`scope-invalid`) instead of being coerced, because Python's `bool("false")` is `True` and the old behaviour silently scanned every ref; `ref: 123` is a 400, not a 500; `roster_dir: []` no longer falls back to the builtin roster; a boolean is not a minute count or a gate limit
 - **Option parity** — one definition of scope / window / roster / session gap / gate (`ghostauthor/options.py`), called by all three surfaces: the same bad request yields the **same error code** on the CLI, the MCP server and the web transport, and the web serves the CLI's exact bytes for the same scope — including a two-branch diff, which `/api/audit` used to silently ignore; `all` and `all_refs` are synonyms everywhere; a malformed entry is a `400`, never an unhandled exception
 - **Byte identity is compared as bytes** — the web serves the report as the CLI's exact byte string, and the assertions compare **raw strings**, not parsed dicts: a re-serialization (different key order, different indentation) parses to the same thing and would pass a dict comparison while making the claim false
 - **The write path sees every signature** — the conflict guard scans the whole message, not just git's trailer block: a commit already signed by another agent is refused even when prose follows the trailer (and signing is still idempotent when *our* signature is the one followed by prose)
@@ -458,7 +459,7 @@ assets → schema freeze, enforced → write path: round-trip / idempotency /
 conflict / default-off → hook: install / sign-at-commit / idempotent /
 conflict / uninstall + roster lint → evidence: audit agreement / byte
 stability / reproducible bundle → evidence freeze, enforced → MCP surface
-parity: 2 tools, both byte-identical to the CLI, every error code → web
+parity: 3 tools, each byte-identical to the CLI, every error code → web
 evidence: `/api/evidence` byte-identical, 400/404/422, UI markers), and
 prints anything it skips and why:
 

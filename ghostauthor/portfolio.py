@@ -94,6 +94,9 @@ class Portfolio:
     by_agent: List[AgentTotal]
     errors: List[Dict[str, str]]
     window: Optional[Dict] = None
+    # Same shape and the same boundary rule as the single-repo report:
+    # `breached` is `ratio > limit`, so a ratio exactly at the limit PASSES.
+    gate: Optional[Dict] = None
 
 
 def discover_repos(root: str, max_depth: int = 3) -> List[Path]:
@@ -208,12 +211,29 @@ def aggregate_agents(entries: Sequence[RepoEntry]) -> List[AgentTotal]:
     ]
 
 
+def gate_result(ratio: float, limit: Optional[float]) -> Optional[Dict]:
+    """The organisation-level gate verdict, or None when no limit was given.
+
+    Boundary rule is inherited verbatim from the single-repo report:
+    ``breached = ratio > limit``, so a ratio exactly at the limit PASSES.
+    Kept pure and separate from `build_portfolio` so the boundary can be
+    pinned without git.
+    """
+    if limit is None:
+        return None
+    if not (0.0 <= limit <= 1.0):
+        raise ValueError("gate-limit-invalid: must be within [0, 1]")
+    return {"limit": limit, "ratio": round(ratio, 6),
+            "breached": ratio > limit}
+
+
 def build_portfolio(paths: Sequence[Path], roster: Roster,
                     ref: str = "HEAD",
                     session_gap_minutes: int = DEFAULT_SESSION_GAP_MINUTES,
                     since: Optional[int] = None,
                     until: Optional[int] = None,
-                    root: str = ".") -> Portfolio:
+                    root: str = ".",
+                    max_ai_ratio: Optional[float] = None) -> Portfolio:
     """Scan each path and aggregate. Never raises for a single bad repo."""
     entries: List[RepoEntry] = []
     errors: List[Dict[str, str]] = []
@@ -234,10 +254,13 @@ def build_portfolio(paths: Sequence[Path], roster: Roster,
             continue
         entries.append(_entry(report, name, repo_path, ref))
 
+    totals = aggregate_totals(entries)
+    gate = gate_result(float(totals["ai_ratio"]), max_ai_ratio)
+
     return Portfolio(
         root=str(Path(root).resolve()), entries=entries,
-        totals=aggregate_totals(entries), by_agent=aggregate_agents(entries),
-        errors=errors,
+        totals=totals, by_agent=aggregate_agents(entries),
+        errors=errors, gate=gate,
         window=({"since": since, "until": until}
                 if (since is not None or until is not None) else None))
 
@@ -247,6 +270,7 @@ def render_portfolio_json(pf: Portfolio) -> str:
         "schema_version": "1",
         "root": pf.root,
         "window": pf.window,
+        "gate": pf.gate,
         "totals": pf.totals,
         "repositories": [
             {"name": e.name, "path": e.path, "ref": e.ref,
@@ -279,6 +303,11 @@ def render_portfolio_text(pf: Portfolio) -> str:
     out.append(f"  mean per-repo ratio: {float(t['mean_repo_ratio']):.1%} "
                f"(unweighted; the aggregate above is the one that describes "
                f"the codebase)")
+    if pf.gate is not None:
+        verdict = "BREACHED" if pf.gate["breached"] else "PASS"
+        out.append(f"  gate: limit {float(pf.gate['limit']):.1%} — {verdict} "
+                   f"(ratio {float(pf.gate['ratio']):.1%}; a ratio exactly at "
+                   f"the limit passes)")
     out.append("")
     name_w = max([len("REPOSITORY")] + [len(e.name) for e in pf.entries])
     out.append(f"  {'REPOSITORY':<{name_w}} {'COMMITS':>8} {'SIGNED':>7} "
@@ -360,6 +389,12 @@ def render_portfolio_html(pf: Portfolio,
         out.append(f'<p class="sub">{len(pf.errors)} repository(ies) could '
                    "not be scanned; they are listed below and excluded from "
                    "the totals.</p>")
+    if pf.gate is not None:
+        verdict = "BREACHED" if pf.gate["breached"] else "PASS"
+        out.append(f'<p class="sub">Gate: limit '
+                   f"{float(pf.gate['limit']) * 100:.1f}% — <strong>"
+                   f"{verdict}</strong> at {float(pf.gate['ratio']) * 100:.1f}% "
+                   "(a ratio exactly at the limit passes).</p>")
     out.append("</div></section>")
 
     out.append('<section><h2>At a glance</h2><div class="kpis">')
