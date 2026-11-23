@@ -18,12 +18,19 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python: ["3.9", "3.11", "3.13"]
+        python: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
         with:
           # Self-audit fixtures and PR-range audits need full history.
           fetch-depth: 0
+      # verify.py creates throwaway git repos and runs real `git commit`;
+      # a bare GitHub runner has no identity and every commit dies with
+      # "Please tell me who you are".
+      - name: Configure git identity (verify.py commit fixtures)
+        run: |
+          git config --global user.name  "GitHub Actions"
+          git config --global user.email "actions@users.noreply.github.com"
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
