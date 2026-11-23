@@ -6,8 +6,9 @@ recomputes them.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 # Commit classification buckets (exhaustive; missing counts are 0, never absent)
@@ -16,6 +17,13 @@ BUCKET_COSIGNED = "cosigned"  # has Co-Authored-By trailers, none matched the ro
 BUCKET_UNSIGNED = "unsigned"  # no Co-Authored-By trailer in the trailer block
 
 ALL_BUCKETS = (BUCKET_AGENT, BUCKET_COSIGNED, BUCKET_UNSIGNED)
+
+# A line that LOOKS like a Co-Authored-By trailer, wherever it appears.
+# Shared by the read side (which reports it as prose when it is outside the
+# trailer block) and the write side (which must see it even when git would
+# not count it as a trailer) — the two must not disagree about whether a
+# commit carries a signature.
+COAUTHOR_LINE_RE = re.compile(r"^\s*co-authored-by\s*:", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -129,6 +137,49 @@ class Report:
     window: Optional[Dict] = None  # {"since": int|None, "until": int|None}; set when a window was applied
 
 
+# The accepted ISO 8601 subset, pinned EXPLICITLY.
+#
+# `datetime.fromisoformat` is deliberately not used: CPython 3.11 widened it
+# to accept most ISO 8601 forms (compact dates like 20260101, nanosecond
+# precision), while 3.9 accepts almost none of them. The project supports
+# 3.9+, so the same bound would be accepted on one supported interpreter and
+# rejected on another — the accepted set would depend on the interpreter
+# instead of on the code. That is exactly the drift this project refuses:
+# the same request must give the same answer everywhere.
+_ISO_RE = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})"
+    r"(?:[T ](?P<time>\d{2}:\d{2}(?::\d{2})?(?:\.\d{1,6})?))?"
+    r"(?P<tz>Z|z|[+-]\d{2}:?\d{2})?$"
+)
+
+
+def _parse_iso(value: str) -> datetime:
+    """Parse the accepted ISO 8601 subset into a datetime.
+
+    Shapes: `YYYY-MM-DD`, optionally followed by `T` or a space and
+    `HH:MM[:SS[.ffffff]]`, optionally followed by `Z` or a `±HH:MM`
+    offset. A naive value is UTC (the documented rule).
+    """
+    m = _ISO_RE.match(value)
+    if m is None:
+        raise ValueError(f"not an accepted ISO 8601 instant: {value!r}")
+    clock = m.group("time") or "00:00:00"
+    if len(clock) == 5:          # HH:MM
+        clock += ":00"
+    if "." in clock:             # HH:MM:SS.ffffff — pad/truncate to micros
+        head, frac = clock.split(".")
+        clock = f"{head}.{frac.ljust(6, '0')[:6]}"
+    fmt = "%Y-%m-%d %H:%M:%S.%f" if "." in clock else "%Y-%m-%d %H:%M:%S"
+    dt = datetime.strptime(f"{m.group('date')} {clock}", fmt)
+    tz = m.group("tz")
+    if tz in (None, "", "Z", "z"):
+        return dt.replace(tzinfo=timezone.utc)
+    sign = 1 if tz[0] == "+" else -1
+    body = tz[1:].replace(":", "")
+    offset = timedelta(hours=int(body[:2]), minutes=int(body[2:4])) * sign
+    return dt.replace(tzinfo=timezone(offset))
+
+
 def parse_window_value(value: str) -> int:
     """Deterministic window-bound parsing: epoch seconds, YYYY-MM-DD
     (UTC midnight) or ISO 8601 datetime. Naive datetimes are UTC. No
@@ -137,14 +188,16 @@ def parse_window_value(value: str) -> int:
     Lives here (pure, no IO) so both the CLI and the web transport share
     exactly one parser — the boundary semantics are defined in one place.
     """
-    if value.isdigit():
+    # `str.isdigit()` is true for superscripts ("²"), which `int()` then
+    # refuses: without the ASCII check the documented
+    # `window-bound-invalid` code never happens and a raw Python message
+    # escapes to the caller.
+    if value.isascii() and value.isdigit():
         return int(value)
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = _parse_iso(value)
     except ValueError:
         raise ValueError(
             f"window-bound-invalid: cannot parse {value!r} (use epoch "
             "seconds, YYYY-MM-DD or ISO 8601)") from None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
     return int(dt.timestamp())

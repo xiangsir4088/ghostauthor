@@ -397,8 +397,21 @@ function fmtPct(r){ return (r*100).toFixed(1)+'%'; }
 
 // A low ratio is the moment a first-time user gives up. Offer the diagnosis
 // inline instead of letting a correct-but-empty ledger read as a broken tool.
+// The server sends the report as the EXACT byte string `ghostauthor
+// --format json` produces (render_json: sort_keys, indent 2, trailing LF).
+// It is a string, not an embedded object, so the bytes served can be
+// compared byte-for-byte with the CLI's — and so the download below IS
+// the CLI's artifact, not a browser re-serialization of it.
+function repDoc(r){
+  if (!r || !r.report) return null;
+  if (typeof r.report === 'string'){
+    try { return JSON.parse(r.report); } catch(e){ return null; }
+  }
+  return r.report;   // tolerate an object (older server)
+}
+
 function coverageHint(r){
-  const rep = r.report || {};
+  const rep = repDoc(r) || {};
   const total = rep.total_commits || 0;
   const signed = (rep.commits_by_bucket || {}).agent || 0;
   if (!total || signed / total >= 0.2) return '';
@@ -518,7 +531,7 @@ function renderResults(results){
   const ok = results.filter(r => r.report);
   const delta = $('#delta-strip');
   if (results.length === 2 && ok.length === 2) {
-    const a = ok[0].report.ai_ratio, b = ok[1].report.ai_ratio;
+    const a = (repDoc(ok[0])||{}).ai_ratio, b = (repDoc(ok[1])||{}).ai_ratio;
     const d = (a - b) * 100;
     $('#delta-a').textContent = fmtPct(a);
     $('#delta-b').textContent = fmtPct(b);
@@ -536,7 +549,7 @@ function renderResults(results){
 function renderReport(r){
   const p = document.createElement('article');
   p.className = 'report';
-  const rep = r.report;
+  const rep = repDoc(r) || {};
   const total = rep.total_commits;
   const b = rep.commits_by_bucket || {};
   const lb = rep.lines_by_bucket || {};
@@ -594,7 +607,11 @@ function renderReport(r){
     ).join('');
   }
 
-  const rawJson = JSON.stringify(rep, null, 2);
+  // The EXACT bytes the CLI produced — not a browser re-serialization.
+  // That is what makes the download byte-identical to
+  // `ghostauthor --format json`.
+  const rawJson = (typeof r.report === 'string') ? r.report
+                                                 : JSON.stringify(rep, null, 2);
 
   p.innerHTML =
     '<header class="report-head"><div class="path mono">' + esc(r.path) + '</div>'

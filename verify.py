@@ -302,15 +302,20 @@ def main() -> int:
                 with urllib.request.urlopen(req) as resp:
                     check("web_audit_status", resp.status == 200)
                     audit = json.loads(resp.read())
-                rep = audit["results"][0]["report"]
+                rep = json.loads(audit["results"][0]["report"])
                 check("web_buckets",
                       rep["commits_by_bucket"] == {"agent": 6, "cosigned": 1,
                                                    "unsigned": 5},
                       f"buckets={rep['commits_by_bucket']}")
+                # RAW byte comparison, not a parsed-dict comparison: a
+                # re-serialized document (different key order, different
+                # indentation) is not the CLI's artifact, and comparing dicts
+                # cannot tell the difference. The web serves the report as
+                # the exact byte string the CLI produced.
                 check("web_byte_stable",
-                      rep == json.loads(
-                          run_cli(mixed, "--format", "json").stdout),
-                      "the web report differs from the CLI JSON")
+                      audit["results"][0]["report"]
+                      == run_cli(mixed, "--format", "json").stdout,
+                      "the web report differs from the CLI JSON bytes")
                 bad = json.dumps(
                     {"entries": [{"path": str(tmp / "nope")}]}).encode()
                 req2 = urllib.request.Request(
@@ -445,7 +450,7 @@ def main() -> int:
             check(f"ci_workflow_{needle.split()[0]}", needle in ci_text,
                   f"ci.yml missing {needle!r}")
         ex_text = example.read_text(encoding="utf-8")
-        for needle in ("xiangsir/ghostauthor@v1", "pull-requests: write",
+        for needle in ("xiangsir4088/ghostauthor@v1", "pull-requests: write",
                        "pr comment"):
             check(f"ci_example_{needle.split()[0]}", needle in ex_text,
                   f"pr-audit.example.yml missing {needle!r}")
@@ -463,10 +468,27 @@ def main() -> int:
         # at a ref that was never created (the pr-audit @v1 bug this repo
         # shipped: self-audit runs the local CLI, so nothing else looked at
         # the action's own tag reference).
+        #
+        # TWO defects are guarded here, and the second one only became
+        # visible when the first was fixed:
+        #   1. a tag that does not exist  -> the consumer gets "Unable to
+        #      resolve action";
+        #   2. a `uses:` line naming a DIFFERENT owner than the repository
+        #      this project publishes to -> the consumer silently resolves a
+        #      different project (or nothing at all). The doc declared the
+        #      alias but the path still pointed at an owner that has no such
+        #      repository, and every check here stayed green.
         import re as _re
+
+        # The owner this project actually publishes to. Kept as a literal in
+        # ONE place: the git remote and pyproject.toml are the other two.
+        ACTION_OWNER = "xiangsir4088"
 
         def _tag_refs(text):
             return _re.findall(r"uses:\s*[\w.-]+/ghostauthor@([\w.-]+)", text)
+
+        def _owner_refs(text):
+            return _re.findall(r"uses:\s*([\w.-]+)/ghostauthor@", text)
 
         aliases = set()
         for line in doc_text.splitlines():
@@ -478,6 +500,16 @@ def main() -> int:
 
         check("ci_alias_v1_declared", "v1" in aliases,
               "docs/ci.md must declare the v1 floating alias")
+        # A declared alias is a PROMISE. It only helps a consumer if the ref
+        # really exists — so the alias must also be a real tag. (Declaring
+        # `v1` in the docs while no `v1` tag existed is the exact half-fix
+        # that shipped the broken template.)
+        for alias in sorted(aliases):
+            check(f"ci_alias_exists_{alias}", alias in existing,
+                  f"docs/ci.md declares the floating alias {alias!r} but no "
+                  f"such git tag exists — a consumer pinning it would get "
+                  f"'Unable to resolve action' "
+                  f"(tags={sorted(existing)})")
         real_refs = [(example.name, t)
                      for t in _tag_refs(example.read_text(encoding="utf-8"))]
         real_refs += [(action.name, t)
@@ -488,6 +520,21 @@ def main() -> int:
             check(f"ci_tagref_{fname}_{tag}", tag in existing or tag in aliases,
                   f"{fname} -> @{tag}: not an existing tag and not a declared "
                   f"alias (tags={sorted(existing)}; aliases={sorted(aliases)})")
+        # Owner pin: every `uses:` line must name the repository this
+        # project publishes to. A wrong owner is a wrong answer that only
+        # shows up in the consumer's pipeline.
+        owners = []
+        for fname, text in (("pr-audit.example.yml", ex_text),
+                            ("action.yml", action.read_text(encoding="utf-8")),
+                            ("docs/ci.md", doc_text)):
+            owners += [(fname, o) for o in _owner_refs(text)]
+        check("ci_owner_refs_found", bool(owners),
+              "expected owner/ghostauthor@ references in the shipped assets")
+        for fname, owner in owners:
+            check(f"ci_owner_{fname}_{owner}", owner == ACTION_OWNER,
+                  f"{fname}: uses: {owner}/ghostauthor@... — the action is "
+                  f"published as {ACTION_OWNER}/ghostauthor; a different "
+                  f"owner resolves to a different project")
         # Negative: the validator must discriminate a bogus reference, so the
         # check can actually go red (delete the alias or typo a tag -> FAIL).
         def _valid(tag):
@@ -496,6 +543,10 @@ def main() -> int:
               _tag_refs("- uses: xiangsir/ghostauthor@v9") == ["v9"]
               and not _valid("v9") and not _valid("v2-nope"),
               "tag validator failed to reject a non-existent, undeclared tag")
+        check("ci_owner_negative",
+              _owner_refs("- uses: someone-else/ghostauthor@v1") == ["someone-else"]
+              and "someone-else" != ACTION_OWNER,
+              "owner validator failed to reject a foreign owner")
 
     step("CI assets (action.yml + workflows + docs) consistent", ci_assets_ok)
 
@@ -1514,6 +1565,185 @@ def main() -> int:
 
     step("HTML audit brief (v1.5): byte-stable, self-contained, timestamp-"
          "free, carries the measured numbers + method", html_brief_ok)
+
+    # 28. Option parity (v1.6): ONE definition of scope / window / roster /
+    #     session gap / gate, shared by the CLI, the MCP server and the web
+    #     transport. The property this step protects: the same request in
+    #     produces the same error CODE on every surface, and the web serves
+    #     the CLI's exact bytes for the same scope — including a two-branch
+    #     diff. The three copies had drifted before the shared module
+    #     existed: the web audit endpoint lost the CLI's codes, silently
+    #     ignored `base`, and spelled the scope flag differently from its
+    #     own sibling endpoints.
+    def option_parity_ok():
+        import json as _json
+        from ghostauthor.mcp_server import _audit_report
+        from ghostauthor.web import handle_audit
+
+        par_tmp = Path(tempfile.mkdtemp(prefix="ghostauthor-verify-par-"))
+        mixed = build_mixed(par_tmp)
+        try:
+            def cli_stderr(*args):
+                proc = run_cli(*args)
+                check(f"par_cli_rc_{args[0]}",
+                      proc.returncode == 2,
+                      f"expected exit 2, got {proc.returncode}: {proc.stderr}")
+                return proc.stderr
+
+            def web_code(entry_params=None, **req):
+                entry = {"path": str(mixed)}
+                entry.update(entry_params or {})
+                st, body = handle_audit({"entries": [entry], **req})
+                check("par_web_status", st in (200, 400), st)
+                if st == 200:
+                    err = body["results"][0]["error"]
+                    check("par_web_error", err is not None,
+                          "expected a per-entry error")
+                    return err["code"]
+                return body["error"]["code"]
+
+            # (a) the same bad request -> the same code on every surface.
+            #     `entry` holds the options the web takes PER REPOSITORY
+            #     (the scope); everything else is a request-level option.
+            cases = [
+                (["--since", "2999-01-01"], {}, {"since": "2999-01-01"}),
+                (["--roster", "nope.json"], {}, {"roster": "nope.json"}),
+                (["--max-ai-ratio", "2"], {}, {"max_ai_ratio": 2}),
+                (["--session-gap", "0"], {}, {"session_gap_minutes": 0}),
+                (["--all", "--ref", "main"], {"all": True, "ref": "main"}, {}),
+            ]
+            for args, entry_params, req in cases:
+                want = cli_stderr(str(mixed), *args)
+                got = web_code(entry_params, **req)
+                check(f"par_code_{args[0]}", got in want,
+                      f"CLI said {want!r}, the web said {got!r}")
+
+            # (b) the web serves the CLI's exact bytes for the same scope —
+            #     including a two-branch diff, which /api/audit used to
+            #     IGNORE (silently answering with the whole history).
+            proc = run_cli(str(mixed), "--base", "HEAD~1", "--format", "json")
+            check("par_base_cli", proc.returncode == 0, proc.stderr)
+            st, body = handle_audit({"entries": [
+                {"path": str(mixed), "base": "HEAD~1"}]})
+            check("par_base_status", st == 200, st)
+            entry = body["results"][0]
+            check("par_base_error", entry["error"] is None, entry["error"])
+            check("par_base_label", entry["ref"] == "HEAD~1..HEAD", entry["ref"])
+            check("par_base_bytes", entry["report"] == proc.stdout,
+                  "the web and the CLI disagree on a two-branch diff")
+
+            # (c) a malformed entry is a malformed REQUEST: 400, never an
+            #     unhandled exception out of the HTTP layer.
+            st, body = handle_audit({"entries": [1, 2]})
+            check("par_bad_entry",
+                  st == 400 and body["error"]["code"] == "bad-entries",
+                  f"{st} {body}")
+
+            # (d) `all` and `all_refs` are synonyms everywhere: a client
+            #     that guessed the wrong spelling used to get HEAD.
+            st, body = handle_audit({"entries": [
+                {"path": str(mixed), "all": True}]})
+            check("par_all_synonym",
+                  st == 200 and body["results"][0]["ref"] == "all",
+                  body["results"][0].get("ref"))
+
+            # (e) the MCP server agrees with the web on the same code.
+            _, err = _audit_report({"path": str(mixed), "all": True,
+                                    "ref": "main"})
+            check("par_mcp_code",
+                  err is not None and err.startswith("ref-conflict"), err)
+        finally:
+            shutil.rmtree(par_tmp, ignore_errors=True)
+
+    step("option parity (v1.6): one definition of scope/window/roster/gate; "
+         "CLI, MCP and web report the same code and the same bytes",
+         option_parity_ok)
+
+    # 29. Hardening (v1.6): the defects an independent review found. Each
+    #     check below corresponds to a bug that WAS reproducible — the
+    #     project's rule is that a fix which cannot go red is a slogan.
+    def hardening_ok():
+        import json as _json
+        from ghostauthor.engine import build_report
+        from ghostauthor.evidence import select_evidence_commits
+        from ghostauthor.gitparse import parse_trailer_block
+        from ghostauthor.models import CommitInfo
+        from ghostauthor.roster import builtin_roster_path
+        from ghostauthor.signer import SignError, plan_sign
+
+        roster = load_roster(builtin_roster_path())
+        claude = next(a for a in roster.agents if a.id == "claude")
+
+        # (a) the write path sees every signature the commit carries: a
+        #     signature followed by prose is still a signature.
+        signed_then_prose = ("a commit\n\n"
+                             "Co-Authored-By: OpenAI Codex "
+                             "<noreply@openai.com>\n\n"
+                             "Generated with [Claude Code]\n")
+        try:
+            plan_sign(signed_then_prose, roster, claude)
+            raise AssertionError("the conflict guard was bypassed")
+        except SignError as exc:
+            check("hard_sign_conflict", exc.code == "sign-conflict", exc.code)
+
+        # (b) an unmatched co-author is visible on an agent-signed commit,
+        #     and the trailer-in-body finding quotes the PROSE.
+        message = ("work\n\n"
+                   "Co-Authored-By: Claude <noreply@anthropic.com>\n"
+                   "Co-Authored-By: Mystery <mystery@nowhere.invalid>\n")
+        commit = CommitInfo(
+            sha="a" * 40, parent_shas=[], author_name="Sam Human",
+            author_email="sam@example.com", authored_at=1767225600,
+            message=message, trailers=parse_trailer_block(message))
+        rep = build_report([commit], roster)
+        unknown = [f for f in rep.findings if f.rule == "cosigned-unknown"]
+        check("hard_cosigned_visible", len(unknown) == 1
+              and "Mystery" in unknown[0].evidence,
+              f"findings={[(f.rule, f.evidence) for f in rep.findings]}")
+
+        prose_msg = ("fix\n\nCo-Authored-By: THIS IS PROSE\n\n"
+                     "Co-Authored-By: Claude <noreply@anthropic.com>\n")
+        prose_commit = CommitInfo(
+            sha="b" * 40, parent_shas=[], author_name="Sam Human",
+            author_email="sam@example.com", authored_at=1767225600,
+            message=prose_msg, trailers=parse_trailer_block(prose_msg))
+        rep2 = build_report([prose_commit], roster)
+        body = [f for f in rep2.findings if f.rule == "trailer-in-body"]
+        check("hard_trailer_in_body",
+              len(body) == 1 and "THIS IS PROSE" in body[0].evidence
+              and "anthropic.com" not in body[0].evidence,
+              f"findings={[(f.rule, f.evidence) for f in rep2.findings]}")
+
+        # (c) one malformed JSON-RPC line must not kill the MCP server.
+        proc = subprocess.run(
+            [sys.executable, "-m", "ghostauthor.mcp_server"],
+            input='[1, 2, 3]\n42\n'
+                  '{"jsonrpc":"2.0","id":1,"method":"initialize"}\n',
+            capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT))
+        check("hard_mcp_survives", proc.returncode == 0,
+              f"the MCP server died: {proc.stderr}")
+        answered = [_json.loads(x) for x in proc.stdout.splitlines() if x.strip()]
+        check("hard_mcp_answered",
+              any(o.get("id") == 1 for o in answered),
+              f"the server never answered the valid request: {proc.stdout!r}")
+
+        # (d) an inverted window has ONE code on every surface.
+        hard_tmp = Path(tempfile.mkdtemp(prefix="ghostauthor-verify-hard-"))
+        try:
+            mixed = build_mixed(hard_tmp)
+            try:
+                select_evidence_commits(str(mixed), [],
+                                        since="2026-06-01", until="2026-01-01")
+                raise AssertionError("the inverted window was not rejected")
+            except ValueError as exc:
+                check("hard_window_invalid", "window-invalid" in str(exc),
+                      str(exc))
+        finally:
+            shutil.rmtree(hard_tmp, ignore_errors=True)
+
+    step("hardening (v1.6): the write path sees every signature; nothing is "
+         "hidden; a malformed request never kills a server",
+         hardening_ok)
 
     print("=" * 44)
     if SKIPPED:

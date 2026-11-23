@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0        # full history — the ledger reads commits
-      - uses: xiangsir/ghostauthor@v1
+      - uses: xiangsir4088/ghostauthor@v1
         with:
           max-ai-ratio: "0.5"   # exit 4 (job fails) when agent-signed > 50%
           format: "json"
@@ -105,11 +105,18 @@ The composite action is referenced by tag. Two kinds exist:
 
 Declared floating aliases: `v1` (= latest 1.x stable).
 
-`verify` step 17 enforces this: every `uses: xiangsir/ghostauthor@<tag>` in
+`verify` step 17 enforces this: every `uses: xiangsir4088/ghostauthor@<tag>` in
 the shipped workflow examples and in `action.yml` must name either an existing
 git tag or a declared floating alias above. A reference to a tag that does not
 exist — or to an alias that is not declared here — goes red. This is the check
 that catches a template pointing at a ref that was never created.
+
+The same step also pins the **repository path** in every `uses:` line to the
+GitHub repository this project actually publishes to (`xiangsir4088/ghostauthor`,
+the one in `git remote` and in `pyproject.toml`). A `uses:` line naming a
+different owner resolves to a different project — or to nothing at all — and
+the failure ("Unable to resolve action") appears only in the *consumer's*
+pipeline, long after this repository's own CI went green.
 
 ## Invariants (unchanged in CI)
 

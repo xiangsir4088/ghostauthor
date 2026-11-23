@@ -349,6 +349,7 @@ agent——其中 7 个带公认的 `signing` 身份，所以
 - [x] v1.3.0 — 可从 PyPI 安装（`pip install ghostauthor`；OIDC trusted publishing，仓库内无 token）+ evidence JSON 契约冻结（`schema/evidence.schema.json`，verify 强制——一改就红）+ `docs/roster.md`（写作指南）+ `README.zh.md`
 - [x] v1.4.0 — 读侧表面一致性：MCP `repo_authorship_report` 补齐完整选项面（scope、窗口、roster、gate）并新增第二个只读工具 `commit_evidence`；web 新增 `/api/evidence` + 面板内证据钻取。现在每个表面对同一请求都返回**与 CLI 相同的字节**——一致性由构造保证，而非靠测试，因为 report/evidence 的选择是同一个共享函数
 - [x] v1.5.0 — **产品面**：`coverage`（采纳诊断——把「签名没被认出来」和「签名根本没写」分开，且从不猜）、`--format html`（自包含、无时间戳的简报，可发邮件、可存档）、`portfolio`（多仓库聚合，按 commit 加权，部分失败被记录）。纯读侧新增，零 schema bump
+- [x] v1.6.0 — **边界的唯一定义**：scope / 窗口 / roster / 会话间隔 / gate 全部收进 `ghostauthor/options.py`，由 CLI、MCP server、web transport 共同调用。修掉了三份拷贝各自漂移出来的差异——`/api/audit` 会静默忽略 `base`、会丢失 CLI 的错误码、scope 开关的拼法和自己的兄弟端点都不一样。纯读侧，零 schema bump
 
 ## 免费与商业
 
@@ -369,7 +370,7 @@ CLI 是 MIT，永远都是。对单个仓库而言，它也是完整的产品：
 
 ## 测试
 
-169 个测试钉的是**性质**，不是覆盖率：
+296 个测试钉的是**性质**，不是覆盖率：
 
 - **可复现性** — 同仓库状态 ⇒ 相同报告，与输入顺序无关
 - **trailer 块语义** — 负例：正文里的签名、签名后跟散文、CRLF message、缺邮箱、小写 key、续行
@@ -394,6 +395,12 @@ CLI 是 MIT，永远都是。对单个仓库而言，它也是完整的产品：
 - **Web 对等** — web 传输层提供与 CLI 逐字节相同的 JSON；请求级错误（坏窗口/门禁/roster）是 400，条目级错误（not-a-repo 404、no-commits 422）带文档化的码
 - **MCP 对等** — 两个 MCP 工具对同一请求都返回 CLI 的确切字节：`repo_authorship_report` 镜像完整选项面，`commit_evidence` 镜像 `evidence --format json`（多 sha 输入顺序保留、无 bundle——服务端从不写文件）；请求错误带 CLI 的码，仓库错误（`sha-unknown`、`not-a-repo`）被钉死
 - **Web 证据** — `/api/evidence` 对 scope / 多 sha / 窗口请求返回 CLI `evidence` 的字节；`sha-unknown` 是 422、`not-a-repo` 是 404、请求错误是 400；面板带证据 UI（查询框 + 逐 sha 内联钻取）
+- **选项一致性** — scope / 窗口 / roster / 会话间隔 / gate 只定义一次（`ghostauthor/options.py`），三个表面共同调用：同一个坏请求在 CLI、MCP server、web transport 上得到**同一个错误码**；web 对同一 scope 返回与 CLI **完全相同的字节**（含两分支 diff）；`all` 与 `all_refs` 处处同义；非法条目是 `400`，绝不是未捕获异常
+- **字节一致是按字节比的** — web 把报告作为 CLI 的确切字节串返回，断言比的是**原始字符串**而不是解析后的 dict：重新序列化（键序不同、缩进不同）解析后是同一个东西，能骗过 dict 比较，却让这个声明变成假的
+- **写路径看得见每一个签名** — 冲突守卫扫的是整条消息，不只是 git 的 trailer 块：即使 trailer 后面跟着散文，已被别的 agent 签过的 commit 依然被拒签（我们自己那条签名后面跟着散文时仍是幂等）
+- **没有什么被藏起来** — 没被名册认领的共同作者在**每一个** commit 上都会浮出来，不只出现在整桶都是 `cosigned` 的那些；`trailer-in-body` 这条 finding 引的是那句该被指的散文，而不是跟在它后面的合法 trailer
+- **一个坏请求不会杀死服务** — 一行坏的 JSON-RPC 会得到一个 JSON-RPC 错误响应，MCP server 继续服务；请求体发一半就停会被回应并关掉连接，而不是把一个工作线程永久占住
+- **同一个时间界在哪儿都是同一个意思** — 接受的 ISO 8601 子集由显式解析器钉死，而不是由解释器的 `fromisoformat` 决定——所以同一条界在每个受支持的 Python 上行为一致
 
 一键跑整个矩阵（roster → 单测 → 3 个确定性 fixture 仓库 → CLI 退出码 →
 真实 MCP `initialize`/`tools/list`/`tools/call` → 渲染 → 时间窗口 →

@@ -319,6 +319,11 @@ def render_portfolio_html(pf: Portfolio,
 
     t = pf.totals
     ratio = float(t["ai_ratio"])
+    # The scope actually scanned — not a hardcoded "HEAD": a portfolio
+    # produced with `--ref feature/x` states the wrong scope in a document
+    # whose whole purpose is to be re-runnable.
+    scope_ref = ", ".join(sorted({e.ref for e in pf.entries
+                                  if e.error is None})) or "HEAD"
     out: List[str] = []
     out.append("<!DOCTYPE html>")
     out.append('<html lang="en">')
@@ -419,7 +424,7 @@ def render_portfolio_html(pf: Portfolio,
                           "commits (never a mean of ratios)"),
             ("Not used", "no LLM, no network, no style classifier, no wall clock"),
             ("Scope", f"{_esc(t['scanned'])} repositories at "
-                      f"<code>{_esc('HEAD')}</code>"),
+                      f"<code>{_esc(scope_ref)}</code>"),
             ("Regenerate", "<code>ghostauthor portfolio &lt;root&gt; "
                            "--format html</code>"),
             ("Tool", f"ghostauthor {_esc(__version__)}, portfolio schema "

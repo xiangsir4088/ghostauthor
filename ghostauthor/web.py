@@ -27,10 +27,11 @@ from .coverage import build_coverage, render_coverage_json
 from .engine import DEFAULT_SESSION_GAP_MINUTES, build_report
 from .evidence import render_evidence_json, select_evidence_commits
 from .gitparse import GitError, iter_commits
-from .models import parse_window_value
+from .options import (OptionError, resolve_gate, resolve_roster,
+                      resolve_scope, resolve_session_gap, resolve_window,
+                      scope_from_mapping, split_code)
 from .report import render_json
-from .roster import (Roster, RosterError, builtin_roster_path, load_roster,
-                     load_roster_dir)
+from .roster import Roster
 
 HTML_PATH = Path(__file__).resolve().parent / "web" / "app.html"
 
@@ -39,37 +40,14 @@ HTML_PATH = Path(__file__).resolve().parent / "web" / "app.html"
 # other git/environment failure is a server-side 500.
 _GIT_STATUS = {"not-a-repo": 404, "no-commits": 422}
 
+# A request body larger than this is refused before it is read. The web
+# transport is a local, read-only dashboard, but an unbounded Content-Length
+# is still an unbounded allocation: refuse the absurd, allow the real.
+_MAX_BODY_BYTES = 32 * 1024 * 1024
+
 
 def _err(code: str, detail: str) -> Dict[str, Any]:
     return {"code": code, "detail": detail}
-
-
-def _label(all_refs: bool, ref: Optional[str]) -> str:
-    return "all" if all_refs else (ref or "HEAD")
-
-
-def _coerce_ratio(value: Any) -> Optional[float]:
-    """The optional 0..1 gate. JSON numbers arrive as float; form strings
-    are tolerated. None / "" means the gate is off."""
-    if value is None or value == "":
-        return None
-    try:
-        ratio = float(value)
-    except (TypeError, ValueError):
-        raise ValueError("gate-limit-invalid: max-ai-ratio must be a "
-                         "number in [0, 1]") from None
-    if not (0.0 <= ratio <= 1.0):
-        raise ValueError("gate-limit-invalid: must be within [0, 1]")
-    return ratio
-
-
-def _err_code(msg: str) -> str:
-    """The leading code of an error message — 'ref-invalid: …' -> 'ref-
-    invalid'. The engine/gitparse/parse error messages all begin with their
-    code, so the web surfaces the SAME code the CLI prints instead of a
-    generic 'value-error'. Falls back to 'value-error' when there is none."""
-    head = msg.split(":", 1)[0].strip()
-    return head if (head and " " not in head and "\n" not in head) else "value-error"
 
 
 def _audit_one(entry: Dict[str, Any], roster: Roster, since: Optional[int],
@@ -81,27 +59,27 @@ def _audit_one(entry: Dict[str, Any], roster: Roster, since: Optional[int],
     window, ...) are reported INSIDE the entry — they never abort the other
     entry, which is what makes side-by-side comparison useful.
     """
-    path = entry.get("path")
-    all_refs = bool(entry.get("all_refs", False))
-    ref = entry.get("ref") or None
-    result: Dict[str, Any] = {"path": path, "ref": _label(all_refs, ref),
+    scope = scope_from_mapping(entry)
+    result: Dict[str, Any] = {"path": entry.get("path"), "ref": scope.label,
                               "report": None, "error": None}
 
-    if not path:
+    path = entry.get("path")
+    if not path or not isinstance(path, str):
         result.update(status=400, error=_err("missing-path",
                                              "path is required"))
         return result
-    if all_refs and ref:
-        result.update(status=400, error=_err("ref-conflict",
-                                             "use all_refs or ref, not both"))
+    try:
+        scope.validate()
+    except OptionError as exc:
+        result.update(status=400, error=_err(exc.code, exc.detail))
         return result
 
     try:
-        commits = iter_commits(str(path), all_refs=all_refs, ref=ref)
+        commits = iter_commits(str(path), **scope.git_kwargs)
         report = build_report(
             commits, roster,
             repo_path=str(Path(path).resolve()),
-            ref=result["ref"],
+            ref=scope.label,
             session_gap_minutes=gap,
             max_ai_ratio=max_ratio,
             since=since, until=until,
@@ -112,12 +90,26 @@ def _audit_one(entry: Dict[str, Any], roster: Roster, since: Optional[int],
         return result
     except ValueError as exc:
         # window-empty / window-invalid / session-gap / gate-limit: the
-        # request is well-formed but this repo cannot answer it.
-        result.update(status=400, error=_err("value-error", str(exc)))
+        # request is well-formed but this repo cannot answer it. The code
+        # is the CLI's own code, read off the message prefix — the same
+        # code the CLI prints for the same failure.
+        code, detail = split_code(str(exc))
+        result.update(status=400, error=_err(code, detail))
+        return result
+    except OSError as exc:
+        # An unreadable path (permissions, a vanished mount) is an
+        # environment failure, not a verdict: 500, never a silent report.
+        result.update(status=500, error=_err("io-error", str(exc)))
         return result
 
-    # Byte-stable: the report served is exactly the CLI's JSON.
-    result.update(status=200, report=json.loads(render_json(report)))
+    # Byte-stable: the report served is EXACTLY the CLI's bytes. It is
+    # returned as a pre-serialized STRING (like /api/evidence and
+    # /api/coverage) rather than re-parsed into a dict: parsing and
+    # re-serializing would compact the document and drop the canonical
+    # key order, so the served bytes would NOT be the CLI's bytes — and
+    # "byte-identical to the CLI" is the whole claim. The client parses
+    # the inner document (and downloads these exact bytes).
+    result.update(status=200, report=render_json(report))
     return result
 
 
@@ -134,46 +126,35 @@ def handle_audit(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     if not isinstance(entries, list) or not (1 <= len(entries) <= 2):
         return 400, {"error": _err("bad-entries",
                                    "entries must be a list of 1 or 2")}
+    # A malformed entry is a malformed REQUEST (not a repository-level
+    # problem), so it rejects the whole request instead of producing an
+    # entry that cannot be rendered.
+    if not all(isinstance(e, dict) for e in entries):
+        return 400, {"error": _err("bad-entries",
+                                   "each entry must be an object")}
 
     roster_file = params.get("roster")
     roster_dir = params.get("roster_dir")
-    if roster_file and roster_dir:
-        return 400, {"error": _err("roster-conflict",
-                                   "use roster or roster_dir, not both")}
 
     # Shared window bounds (request-level).
-    since = until = None
     try:
-        if params.get("since") not in (None, ""):
-            since = parse_window_value(str(params["since"]))
-        if params.get("until") not in (None, ""):
-            until = parse_window_value(str(params["until"]))
-    except ValueError as exc:
-        return 400, {"error": _err("window-bound-invalid", str(exc))}
+        since, until = resolve_window(params.get("since"), params.get("until"))
+    except OptionError as exc:
+        return 400, {"error": _err(exc.code, exc.detail)}
 
     # Shared session gap + gate (request-level).
     try:
-        gap = int(params.get("session_gap_minutes",
-                             DEFAULT_SESSION_GAP_MINUTES))
-    except (TypeError, ValueError):
-        return 400, {"error": _err("session-gap-invalid",
-                                   "session_gap_minutes must be an integer")}
-    if gap <= 0:
-        return 400, {"error": _err("session-gap-invalid",
-                                   "must be positive minutes")}
-    try:
-        max_ratio = _coerce_ratio(params.get("max_ai_ratio"))
-    except ValueError as exc:
-        return 400, {"error": _err("gate-limit-invalid", str(exc))}
+        gap = resolve_session_gap(params.get("session_gap_minutes",
+                                             DEFAULT_SESSION_GAP_MINUTES))
+        max_ratio = resolve_gate(params.get("max_ai_ratio"))
+    except OptionError as exc:
+        return 400, {"error": _err(exc.code, exc.detail)}
 
     # Load the roster once (request-level).
     try:
-        if roster_dir:
-            roster = load_roster_dir(roster_dir)
-        else:
-            roster = load_roster(roster_file or builtin_roster_path())
-    except RosterError as exc:
-        return 400, {"error": _err("roster-error", str(exc))}
+        roster = resolve_roster(roster_file, roster_dir)
+    except OptionError as exc:
+        return 400, {"error": _err(exc.code, exc.detail)}
 
     results = [_audit_one(e, roster, since, until, gap, max_ratio)
                for e in entries]
@@ -208,40 +189,24 @@ def handle_evidence(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     else:
         shas = []
 
-    all_refs = bool(params.get("all"))
-    ref = params.get("ref") or None
-    base = params.get("base") or None
-    if all_refs and ref:
-        return 400, {"error": _err("ref-conflict", "use all or ref, not both")}
-    if all_refs and base:
-        return 400, {"error": _err("ref-conflict", "use all or base, not both")}
-
-    since = until = None
     try:
-        if params.get("since") not in (None, ""):
-            since = parse_window_value(str(params["since"]))
-        if params.get("until") not in (None, ""):
-            until = parse_window_value(str(params["until"]))
-    except ValueError as exc:
-        return 400, {"error": _err(_err_code(str(exc)), str(exc))}
+        scope = resolve_scope(params, shas_given=bool(shas))
+    except OptionError as exc:
+        return 400, {"error": _err(exc.code, exc.detail)}
 
-    roster_file = params.get("roster")
-    roster_dir = params.get("roster_dir")
-    if roster_file and roster_dir:
-        return 400, {"error": _err("roster-conflict",
-                                   "use roster or roster_dir, not both")}
     try:
-        if roster_dir:
-            roster = load_roster_dir(roster_dir)
-        else:
-            roster = load_roster(roster_file or builtin_roster_path())
-    except RosterError as exc:
-        return 400, {"error": _err("roster-error", str(exc))}
+        since, until = resolve_window(params.get("since"), params.get("until"))
+    except OptionError as exc:
+        return 400, {"error": _err(exc.code, exc.detail)}
+
+    try:
+        roster = resolve_roster(params.get("roster"), params.get("roster_dir"))
+    except OptionError as exc:
+        return 400, {"error": _err(exc.code, exc.detail)}
 
     try:
         commits = select_evidence_commits(
-            str(path), shas, all_refs=all_refs, ref=ref, base=base,
-            since=since, until=until)
+            str(path), shas, **scope.git_kwargs, since=since, until=until)
     except GitError as exc:
         status = {"not-a-repo": 404, "no-commits": 422,
                   "sha-unknown": 422}.get(exc.code, 500)
@@ -249,7 +214,10 @@ def handle_evidence(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     except ValueError as exc:
         # ref-invalid / ref-conflict / window-empty: the request is
         # well-formed but cannot be answered.
-        return 400, {"error": _err(_err_code(str(exc)), str(exc))}
+        code, detail = split_code(str(exc))
+        return 400, {"error": _err(code, detail)}
+    except OSError as exc:
+        return 500, {"error": _err("io-error", str(exc))}
 
     # Return the evidence as a pre-serialized STRING (like /api/audit nests
     # the report) so the bytes are exactly the CLI's — not a re-serialization
@@ -274,55 +242,39 @@ def handle_coverage(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     if not path:
         return 400, {"error": _err("missing-path", "path is required")}
 
-    all_refs = bool(params.get("all"))
-    ref = params.get("ref") or None
-    base = params.get("base") or None
-    if all_refs and ref:
-        return 400, {"error": _err("ref-conflict", "use all or ref, not both")}
-    if all_refs and base:
-        return 400, {"error": _err("ref-conflict", "use all or base, not both")}
-    for name, value in (("ref", ref), ("base", base)):
-        if value is not None and value.startswith("-"):
-            return 400, {"error": _err("ref-invalid",
-                                       f"{name} cannot start with '-'")}
-
-    since = until = None
     try:
-        if params.get("since") not in (None, ""):
-            since = parse_window_value(str(params["since"]))
-        if params.get("until") not in (None, ""):
-            until = parse_window_value(str(params["until"]))
-    except ValueError as exc:
-        return 400, {"error": _err(_err_code(str(exc)), str(exc))}
+        scope = resolve_scope(params)
+    except OptionError as exc:
+        return 400, {"error": _err(exc.code, exc.detail)}
 
-    roster_file = params.get("roster")
-    roster_dir = params.get("roster_dir")
-    if roster_file and roster_dir:
-        return 400, {"error": _err("roster-conflict",
-                                   "use roster or roster_dir, not both")}
+    since, until = None, None
     try:
-        if roster_dir:
-            roster = load_roster_dir(roster_dir)
-        else:
-            roster = load_roster(roster_file or builtin_roster_path())
-    except RosterError as exc:
-        return 400, {"error": _err("roster-error", str(exc))}
+        since, until = resolve_window(params.get("since"), params.get("until"))
+    except OptionError as exc:
+        return 400, {"error": _err(exc.code, exc.detail)}
 
     try:
-        commits = iter_commits(str(path), all_refs=all_refs, ref=ref, base=base)
+        roster = resolve_roster(params.get("roster"), params.get("roster_dir"))
+    except OptionError as exc:
+        return 400, {"error": _err(exc.code, exc.detail)}
+
+    try:
+        commits = iter_commits(str(path), **scope.git_kwargs)
     except GitError as exc:
         return _GIT_STATUS.get(exc.code, 500), {"error": _err(exc.code, str(exc))}
     except ValueError as exc:
-        return 400, {"error": _err(_err_code(str(exc)), str(exc))}
+        code, detail = split_code(str(exc))
+        return 400, {"error": _err(code, detail)}
+    except OSError as exc:
+        return 500, {"error": _err("io-error", str(exc))}
 
     try:
         cov = build_coverage(
             commits, roster, repo_path=str(Path(str(path)).resolve()),
-            ref=(f"{base}..{ref or 'HEAD'}" if base is not None
-                 else ("all" if all_refs else (ref or "HEAD"))),
-            since=since, until=until)
+            ref=scope.label, since=since, until=until)
     except ValueError as exc:
-        return 400, {"error": _err(_err_code(str(exc)), str(exc))}
+        code, detail = split_code(str(exc))
+        return 400, {"error": _err(code, detail)}
 
     return 200, {"coverage": render_coverage_json(cov)}
 
@@ -330,6 +282,10 @@ def handle_coverage(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
 class Handler(BaseHTTPRequestHandler):
     server_version = "ghostauthor/" + __version__
     protocol_version = "HTTP/1.1"
+    # A client that declares more body bytes than it sends must not hold a
+    # worker thread forever. With keep-alive, an unanswered request would
+    # park the thread indefinitely; the timeout turns that into a 400.
+    timeout = 30
 
     def _send(self, status: int, body: bytes,
               content_type: str = "application/json; charset=utf-8") -> None:
@@ -363,6 +319,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("Content-Length") or 0)
+            if length > _MAX_BODY_BYTES:
+                self._json(413, {"error": _err("body-too-large",
+                                               f"request body exceeds "
+                                               f"{_MAX_BODY_BYTES} bytes")})
+                return
             raw = self.rfile.read(length) if length > 0 else b"{}"
             params = json.loads(raw.decode("utf-8") or "{}")
             if not isinstance(params, dict):
@@ -370,12 +331,27 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError) as exc:
             self._json(400, {"error": _err("bad-json", str(exc))})
             return
-        if self.path == "/api/evidence":
-            status, body = handle_evidence(params)
-        elif self.path == "/api/coverage":
-            status, body = handle_coverage(params)
-        else:
-            status, body = handle_audit(params)
+        except OSError as exc:
+            # A stalled or truncated body: the client declared more bytes
+            # than it sent. Answer, then close the connection — with
+            # keep-alive, leaving it open would park the worker thread.
+            self.close_connection = True
+            self._json(400, {"error": _err("bad-body", str(exc))})
+            return
+        try:
+            if self.path == "/api/evidence":
+                status, body = handle_evidence(params)
+            elif self.path == "/api/coverage":
+                status, body = handle_coverage(params)
+            else:
+                status, body = handle_audit(params)
+        except Exception as exc:  # noqa: BLE001 — last line of defence
+            # An unexpected failure must still produce a well-formed HTTP
+            # response. With protocol_version HTTP/1.1 (keep-alive), letting
+            # an exception escape would drop the connection without a
+            # response — the client would hang instead of seeing a 500.
+            self._json(500, {"error": _err("internal-error", str(exc))})
+            return
         self._json(status, body)
 
     def log_message(self, *args: Any) -> None:

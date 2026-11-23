@@ -37,7 +37,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, Union
 
-from .gitparse import GitError, _TRAILER_LINE_RE, _run_git, parse_trailer_block
+from .gitparse import (GitError, _TRAILER_LINE_RE, _run_git,
+                       iter_coauthor_lines)
 from .roster import AgentRule, Roster
 
 TRAILER_KEY = "Co-Authored-By"
@@ -137,10 +138,17 @@ def plan_sign(message: str, roster: Roster, agent: AgentRule) -> Tuple[str, str,
     signature is refused (sign-conflict). Non-roster co-authors (cosigned
     territory) do not conflict: the read side keeps them in their own
     bucket.
+
+    The scan covers the WHOLE message, not just git's trailer block: a
+    signature that prose follows is still a signature the commit carries,
+    and a commit must not end up signed by two agents because someone added
+    a line after the trailer block. (The read side and the write side must
+    not disagree about whether a commit carries a signature — so both use
+    `gitparse.iter_coauthor_lines`.)
     """
     name, email = agent.signing
     trailer = f"{TRAILER_KEY}: {name} <{email}>"
-    for t in parse_trailer_block(message):
+    for t in iter_coauthor_lines(message):
         rule = roster.match(t.name, t.email_domain)
         if rule is None:
             continue

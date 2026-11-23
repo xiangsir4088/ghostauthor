@@ -14,6 +14,13 @@ Two tools, both pure reads over the SAME pipeline as the CLI:
   `evidence --format json`. It has NO bundle parameter: a bundle writes
   files, and the server never writes files.
 
+Request semantics (scope, window, roster, session gap, gate) are NOT
+parsed here: they come from `options`, the module the CLI and the web
+transport call too. One definition of a boundary means the three surfaces
+cannot drift apart — which is how they already had (the web audit endpoint
+used to lose the CLI's error codes, and spelled the scope flag differently
+from its own sibling endpoints).
+
 Transport: newline-delimited JSON-RPC 2.0 over stdio.
 """
 from __future__ import annotations
@@ -27,54 +34,23 @@ from . import __version__
 from .engine import DEFAULT_SESSION_GAP_MINUTES, build_report
 from .evidence import render_evidence_json, select_evidence_commits
 from .gitparse import GitError, iter_commits
-from .models import parse_window_value
+from .options import (OptionError, Scope, resolve_gate, resolve_roster,
+                      resolve_session_gap, resolve_window, scope_from_mapping)
 from .report import render_json
-from .roster import (RosterError, builtin_roster_path, load_roster,
-                     load_roster_dir)
 
 PROTOCOL_VERSION = "2025-03-26"
 
 
-def _since_until(args: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
-    """Parse the optional window bounds (since inclusive, until exclusive).
-    Returns (since, until); raises ValueError (window-bound-invalid) on a bad
-    bound. Mirrors the CLI and the web handler exactly."""
-    since = until = None
-    if args.get("since") not in (None, ""):
-        since = parse_window_value(str(args["since"]))
-    if args.get("until") not in (None, ""):
-        until = parse_window_value(str(args["until"]))
-    return since, until
+def _scope(args: Dict[str, Any]) -> Scope:
+    """The requested scope.
 
-
-def _scope_validation_error(all_refs: bool, ref: Optional[str],
-                            base: Optional[str]) -> Optional[str]:
-    """Request-level scope errors, returned as a message or None. Mirrors
-    gitparse.iter_commits so a bad scope is rejected here with the same codes
-    (ref-conflict / ref-invalid) the CLI produces."""
-    if all_refs and ref:
-        return "ref-conflict: use all_refs or ref, not both"
-    if all_refs and base:
-        return "ref-conflict: use all_refs or base, not both"
-    for name, value in (("ref", ref), ("base", base)):
-        if value is not None and value.startswith("-"):
-            return f"ref-invalid: {name} cannot start with '-'"
-    return None
-
-
-def _load_roster_or_error(roster: Any, roster_dir: Any
-                          ) -> Tuple[Optional[object], Optional[str]]:
-    """Load the roster or return a request-level error message. Mirrors the
-    CLI: roster + roster_dir together is roster-conflict; a bad file is
-    roster-error. (RosterError subclasses ValueError, so it is caught first.)"""
-    if roster and roster_dir:
-        return None, "roster-conflict: use roster or roster_dir, not both"
-    try:
-        if roster_dir:
-            return load_roster_dir(roster_dir), None
-        return load_roster(roster or builtin_roster_path()), None
-    except RosterError as exc:
-        return None, f"roster-error: {exc}"
+    `all_refs` is this server's own parameter name (the tool schema is
+    frozen and cannot change), but `all` is accepted as a synonym by
+    `options.scope_from_mapping` — so a client that learned the web
+    transport's spelling still gets the scope it asked for instead of
+    silently getting HEAD.
+    """
+    return scope_from_mapping(args)
 
 
 def _audit_report(args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
@@ -86,57 +62,47 @@ def _audit_report(args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     returned as (None, "<code>: <msg>").
     """
     path = args.get("path") or "."
-    all_refs = bool(args.get("all_refs"))
-    ref = args.get("ref") or None
-    base = args.get("base") or None
-
-    roster, error = _load_roster_or_error(args.get("roster"),
-                                          args.get("roster_dir"))
-    if error:
-        return None, error
-
-    if (err := _scope_validation_error(all_refs, ref, base)) is not None:
-        return None, err
 
     try:
-        since, until = _since_until(args)
-    except ValueError as exc:
+        roster = resolve_roster(args.get("roster"), args.get("roster_dir"))
+    except OptionError as exc:
+        return None, str(exc)
+
+    scope = _scope(args)
+    try:
+        scope.validate()
+    except OptionError as exc:
         return None, str(exc)
 
     try:
-        gap = int(args.get("session_gap_minutes", DEFAULT_SESSION_GAP_MINUTES))
-    except (TypeError, ValueError):
-        return None, "session-gap-invalid: session_gap_minutes must be an integer"
-    if gap <= 0:
-        return None, "session-gap-invalid: must be positive minutes"
-
-    max_ratio = args.get("max_ai_ratio")
-    if max_ratio is not None:
-        try:
-            max_ratio = float(max_ratio)
-        except (TypeError, ValueError):
-            return None, ("gate-limit-invalid: max-ai-ratio must be a number "
-                          "in [0, 1]")
-        if not (0.0 <= max_ratio <= 1.0):
-            return None, "gate-limit-invalid: must be within [0, 1]"
-    else:
-        max_ratio = None
+        since, until = resolve_window(args.get("since"), args.get("until"))
+    except OptionError as exc:
+        return None, str(exc)
 
     try:
-        commits = iter_commits(str(path), all_refs=all_refs, ref=ref, base=base)
+        gap = resolve_session_gap(args.get("session_gap_minutes",
+                                          DEFAULT_SESSION_GAP_MINUTES))
+    except OptionError as exc:
+        return None, str(exc)
+
+    try:
+        max_ratio = resolve_gate(args.get("max_ai_ratio"))
+    except OptionError as exc:
+        return None, str(exc)
+
+    try:
+        commits = iter_commits(str(path), **scope.git_kwargs)
     except (GitError, ValueError) as exc:
         # GitError: not-a-repo / no-commits / git-failed. ValueError: a scope
         # problem the pre-check did not catch. Same codes as the CLI.
         return None, str(exc)
 
     # Byte parity with the CLI: resolved repo path, identical ref label.
-    ref_label = (f"{base}..{ref or 'HEAD'}" if base is not None
-                 else ("all" if all_refs else (ref or "HEAD")))
     try:
         report = build_report(
             commits, roster,
             repo_path=str(Path(path).resolve()),
-            ref=ref_label,
+            ref=scope.label,
             session_gap_minutes=gap,
             max_ai_ratio=max_ratio,
             since=since, until=until)
@@ -163,29 +129,32 @@ def _evidence_report(args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]
         shas = [str(s) for s in shas]
     else:
         shas = []
-    all_refs = bool(args.get("all_refs"))
-    ref = args.get("ref") or None
-    base = args.get("base") or None
-
-    roster, error = _load_roster_or_error(args.get("roster"),
-                                          args.get("roster_dir"))
-    if error:
-        return None, error
-
-    # Scope only matters when shas are omitted (the CLI ignores scope once the
-    # auditor names the commits).
-    if not shas and (err := _scope_validation_error(all_refs, ref, base)) is not None:
-        return None, err
 
     try:
-        since, until = _since_until(args)
-    except ValueError as exc:
+        roster = resolve_roster(args.get("roster"), args.get("roster_dir"))
+    except OptionError as exc:
+        return None, str(exc)
+
+    scope = _scope(args)
+
+    # Scope only matters when shas are omitted (the CLI ignores scope once the
+    # auditor names the commits). The rule itself lives in
+    # `options.resolve_scope`, so the CLI, this server and the web endpoint
+    # cannot disagree about it.
+    if not shas:
+        try:
+            scope.validate()
+        except OptionError as exc:
+            return None, str(exc)
+
+    try:
+        since, until = resolve_window(args.get("since"), args.get("until"))
+    except OptionError as exc:
         return None, str(exc)
 
     try:
         commits = select_evidence_commits(
-            path, shas, all_refs=all_refs, ref=ref, base=base,
-            since=since, until=until)
+            path, shas, **scope.git_kwargs, since=since, until=until)
     except (GitError, ValueError) as exc:
         # GitError: sha-unknown / not-a-repo / no-commits. ValueError:
         # ref-conflict / ref-invalid / window-empty. Same codes as the CLI.
@@ -330,8 +299,14 @@ def _error_content(message: str) -> Dict[str, Any]:
             "isError": True}
 
 
+class _InvalidParams(ValueError):
+    """The request's SHAPE is wrong (not the method). JSON-RPC -32602."""
+
+
 def _handle(method: str, params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     params = params or {}
+    if not isinstance(params, dict):
+        raise _InvalidParams("params must be an object")
     if method == "initialize":
         return {
             "protocolVersion": PROTOCOL_VERSION,
@@ -343,6 +318,8 @@ def _handle(method: str, params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if method == "tools/call":
         name = params.get("name")
         args = params.get("arguments") or {}
+        if not isinstance(args, dict):
+            raise _InvalidParams("arguments must be an object")
         if name == TOOL["name"]:
             payload, error = _audit_report(args)
         elif name == COMMIT_EVIDENCE_TOOL["name"]:
@@ -365,6 +342,11 @@ def serve() -> None:
             req = json.loads(line)
         except json.JSONDecodeError:
             continue
+        # A peer may send anything: a JSON array, a number, a string. One
+        # malformed line must not end the session — the server would be
+        # gone for every request that follows, not just the bad one.
+        if not isinstance(req, dict):
+            continue
         msg_id = req.get("id")
         method = req.get("method")
         if method is None or msg_id is None:
@@ -372,9 +354,17 @@ def serve() -> None:
         try:
             out = {"jsonrpc": "2.0", "id": msg_id,
                    "result": _handle(method, req.get("params"))}
+        except _InvalidParams as exc:
+            out = {"jsonrpc": "2.0", "id": msg_id,
+                   "error": {"code": -32602, "message": str(exc)}}
         except ValueError as exc:
             out = {"jsonrpc": "2.0", "id": msg_id,
                    "error": {"code": -32601, "message": str(exc)}}
+        except (TypeError, AttributeError) as exc:
+            # Answered as a JSON-RPC error rather than a crash: a dead
+            # server cannot serve the next request.
+            out = {"jsonrpc": "2.0", "id": msg_id,
+                   "error": {"code": -32603, "message": str(exc)}}
         sys.stdout.write(json.dumps(out) + "\n")
         sys.stdout.flush()
 

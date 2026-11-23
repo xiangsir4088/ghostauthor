@@ -24,7 +24,7 @@ jobs:
           fetch-depth: 0
       - name: Audit PR range
         id: audit
-        uses: xiangsir/ghostauthor@v1
+        uses: xiangsir4088/ghostauthor@v1
         with:
           base: "origin/${{ github.base_ref }}"
           format: "markdown"

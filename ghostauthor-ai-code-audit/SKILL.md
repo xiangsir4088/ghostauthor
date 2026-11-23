@@ -12,7 +12,7 @@ license: MIT
 metadata:
   author: xiangsir
   tool: ghostauthor
-  version: "1.3"
+  version: "1.5"
 ---
 
 # AI Code Provenance Audit (ghostauthor)
@@ -80,7 +80,28 @@ Read the report as three layers:
    line in the prose body — ignored by design), `multi-agent-commit`,
    `trailer-no-email`.
 
-## Step 3 — Verify before you conclude
+## Step 3 — When the ratio is low, diagnose before you conclude
+
+A ledger with no signatures is **correct and useless**: every commit is
+`unsigned`, the ratio is 0.0%, and the operator concludes the tool is broken.
+It is not — the signatures are missing. `coverage` separates the two causes,
+which have **different fixes**:
+
+```bash
+ghostauthor coverage <path>
+ghostauthor coverage <path> --format json
+```
+
+| What it finds | What it means | Fix |
+|---|---|---|
+| A trailer no roster rule claims (`Co-Authored-By: Cursor <…>`) | The signature exists, the roster does not know that name | **Data**: add a roster rule (`--roster`) |
+| Unsigned commits carrying a literal tool marker (`Generated with [Claude Code]`) | The agent never emitted a trailer | **Write path**: `install-hook`, or turn the trailer on in the agent |
+| Unsigned commits with no marker | Unknown — a human, or an agent that leaves no trace | **Nothing is claimed.** The ledger records signatures; it does not guess |
+
+Markers are **hints, never attributions**: `coverage` never changes a bucket.
+Do not report a marker as an attribution.
+
+## Step 4 — Verify before you conclude
 
 - **Every number is traceable.** The JSON report carries the full commit list
   per bucket, per agent and per session (`bucket_commit_shas`). If you cannot
@@ -89,10 +110,25 @@ Read the report as three layers:
   report does not reproduce byte-for-byte on re-run, something changed — do not
   trust it.
 - **Per-commit evidence.** To answer "why did the audit attribute THIS commit
-  this way", run `ghostauthor <path> <sha> evidence` (or the MCP
+  this way", run `ghostauthor evidence <path> <sha>` (or the MCP
   `commit_evidence` tool). It names the exact roster selector that matched each
   trailer. A verdict you cannot expand into evidence is a verdict you cannot
   defend.
+
+## Deliverables — when the answer is for someone else
+
+Two read-side commands turn a report into an artefact:
+
+```bash
+ghostauthor <path> --format html --out audit.html
+# a self-contained brief: no script, no remote asset, NO generation
+# timestamp — the same repo state regenerates the same bytes, so it can
+# sit next to the JSON as evidence rather than as a screenshot
+
+ghostauthor portfolio ~/code --format html --out portfolio.html
+# the same ledger across many repositories. The aggregate is weighted by
+# commit (sum(signed)/sum(commits)), NEVER a mean of per-repo ratios
+```
 
 ## CI gate (the exit-code contract)
 

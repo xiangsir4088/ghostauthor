@@ -6,7 +6,7 @@
 #   4  gate breached (agent-signed ratio above max-ai-ratio)
 #
 # Minimal usage:
-#   - uses: xiangsir/ghostauthor@v1
+#   - uses: xiangsir4088/ghostauthor@v1
 #     with:
 #       max-ai-ratio: "0.5"
 name: "ghostauthor"

@@ -19,8 +19,9 @@ be steered by wording will eventually be steered by wording.
 | File | Responsibility | Forbidden here |
 |---|---|---|
 | `models.py` | data model + bucket constants + shared window-bound parser | any IO, any git call |
+| `options.py` | ONE definition of scope / window / roster / session gap / gate, shared by the CLI, the MCP server and the web transport | any git call, any rendering, any judgement about a commit |
 | `roster.py` | load + validate the declarative agent roster | silently "fixing" bad input |
-| `gitparse.py` | git log extraction (HEAD / all refs / one ref / one sha), trailer-block parsing | any judgment, any matching |
+| `gitparse.py` | git log extraction (HEAD / all refs / one ref / one sha), trailer-block parsing, `iter_coauthor_lines` (every Co-Authored-By line, wherever it is) | any judgment, any matching |
 | `engine.py` | normalize → match → sessions → aggregate | any rendering, any file IO |
 | `report.py` | render text / json / markdown / sarif | any recomputation |
 | `evidence.py` | per-commit evidence entries + bundle assembly (pure: no IO, no wall clock; consumes `engine.attribute_commit`) | any re-attribution (that is `engine`'s job), any rendering of the frozen report (that is `report.py`'s job) |
@@ -35,6 +36,38 @@ Nothing downstream recomputes what upstream decided. The write path is
 the deliberate exception: `signer.py` reuses `roster.match` (the same
 precedence the audit uses — that is what makes round-trip hold) but never
 feeds the read pipeline.
+
+### Why `options.py` exists
+
+The CLI, the MCP server and the web transport all accept the same
+request-shaped options: a scope (`--all` / `--ref` / `--base`), a time
+window, a roster, a session gap, a gate. When each surface parsed those
+independently, the copies drifted — and two of the differences were not
+cosmetic:
+
+* the web audit endpoint **ignored `base`**, so a two-branch diff request
+  silently returned the whole history — a wrong answer that looks right;
+* the web audit endpoint **collapsed every option error** into a generic
+  `value-error`, so the CLI's code (`window-empty`, `ref-invalid`, …) was
+  lost on the way out.
+
+The third copy of the same logic is the bug waiting to happen. So the
+semantics live in `options.py` and the surfaces *call* it. This is the
+same move the project already made twice — the window-bound parser lives
+in `models.py`, the evidence selection in `evidence.select_evidence_commits`
+— and the reason those two were moved in the first place.
+
+The rule that follows: **a boundary is defined once.** If two surfaces
+can interpret the same request differently, that is a bug, not a
+configuration.
+
+The same rule governs "does this commit carry a signature?": the read
+side (`gitparse.parse_trailer_block` — git's semantics, the final
+paragraph only) and the write side (`gitparse.iter_coauthor_lines` — every
+line, wherever it is) use **one** helper for the question, so a signature
+cannot be visible to one and invisible to the other. When they drifted,
+the signer could add a second agent's signature to a commit that already
+carried one — the exact state the write path claims never to create.
 
 ## Invariants (the parts that keep the tool honest for years)
 
@@ -64,11 +97,17 @@ feeds the read pipeline.
 
 ## MCP contract
 
-Read-only. One tool: `repo_authorship_report`. No network, no writes, no
+Read-only. Two tools: `repo_authorship_report` (the full audit) and
+`commit_evidence` (per-commit evidence). No network, no writes, no
 process execution beyond the read-only `git log` inside the repository it is
 pointed at. **It never auto-executes anything.** The moment a tool can act,
 the risk model changes from "advice" to "decision that must be supervised" —
 this tool refuses that change of category.
+
+Both tools return the CLI's **exact bytes** for the same request, and the
+server answers a malformed request with a JSON-RPC error rather than
+dying: one bad line must not take the session — and every request after
+it — down with it.
 
 ## Web transport
 
@@ -82,11 +121,24 @@ read-only `git log` inside the repositories it is pointed at.
 
 The report it serves is **byte-identical to the CLI's `--format json`** for
 the same repo state (pinned by `tests/test_web.py` and by verify), so the
-reproducibility invariant holds on every transport. Error codes are the HTTP
-translation of the exit-code contract: request-level option errors are 400,
+reproducibility invariant holds on every transport. It is served as the
+CLI's **byte string**, not as a re-serialized document: parsing the
+report back into a dict and dumping it again would compact the output and
+drop the canonical key order — the document would still *parse* to the
+same thing while no longer being the CLI's artifact. The dashboard parses
+that string for rendering and offers the same string for download, so the
+"download .json" button delivers the CLI's bytes.
+
+Error codes are the HTTP translation of the exit-code contract: request-level option errors are 400,
 a missing repository is 404, an empty repository is 422 — and a breached
 gate is still a 200, because a breach is a verdict, not a failure. It binds
 `127.0.0.1` by default: the audit tool runs on the machine it audits.
+
+The request path and the roster path are **request-controlled**: a client
+that can reach the port can make the server read any directory as a
+repository and any JSON file as a roster. The default bind is loopback,
+which is why it is the default; `--host 0.0.0.0` is one flag away and
+exposes that to the network.
 
 ## What is deliberately NOT here
 

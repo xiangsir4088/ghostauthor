@@ -47,13 +47,18 @@ class WebAPITests(unittest.TestCase):
         self.assertEqual(r["status"], 200)
         self.assertIsNone(r["error"])
         self.assertEqual(r["ref"], "HEAD")
-        self.assertEqual(r["report"]["commits_by_bucket"],
+        rep = json.loads(r["report"])
+        self.assertEqual(rep["commits_by_bucket"],
                          {"agent": 6, "cosigned": 1, "unsigned": 5})
-        self.assertAlmostEqual(r["report"]["ai_ratio"], 0.5)
+        self.assertAlmostEqual(rep["ai_ratio"], 0.5)
 
     def test_report_byte_stable_with_cli(self):
         # The core invariant: same repo state => same report, on every
-        # transport. The web JSON must equal the CLI JSON exactly.
+        # transport. The web serves the CLI's JSON **as the exact byte
+        # string** the CLI produced — so the comparison is a RAW string
+        # comparison. Comparing parsed dicts would pass even if the server
+        # re-serialized the document (different key order, different
+        # indentation) — which it used to, and which made the claim false.
         st, body = self.audit()
         self.assertEqual(st, 200)
         cli = subprocess.run(
@@ -62,17 +67,22 @@ class WebAPITests(unittest.TestCase):
             capture_output=True, text=True, encoding="utf-8",
             cwd=str(ROOT))
         self.assertEqual(cli.returncode, 0, cli.stderr)
-        self.assertEqual(body["results"][0]["report"], json.loads(cli.stdout))
+        served = body["results"][0]["report"]
+        self.assertIsInstance(served, str,
+                              "the report must be served as the CLI's bytes")
+        self.assertEqual(served, cli.stdout)
+        # And the bytes really are the CLI's document, not a look-alike.
+        self.assertEqual(json.loads(served), json.loads(cli.stdout))
 
     def test_window_applied_per_repo(self):
         st, body = self.audit(since=str(MIXED_BASE_TS + 5 * 3600))
         r = body["results"][0]
         self.assertEqual(r["status"], 200)
+        rep = json.loads(r["report"])
         # i=5..11: agent(6,7,10) + cosigned(9) + unsigned(5,8,11)
-        self.assertEqual(r["report"]["commits_by_bucket"],
+        self.assertEqual(rep["commits_by_bucket"],
                          {"agent": 3, "cosigned": 1, "unsigned": 3})
-        self.assertEqual(r["report"]["window"]["since"],
-                         MIXED_BASE_TS + 5 * 3600)
+        self.assertEqual(rep["window"]["since"], MIXED_BASE_TS + 5 * 3600)
 
     def test_gate_breach_is_a_result_not_an_error(self):
         st, body = handle_audit({"entries": [{"path": str(self.heavy)}],
@@ -80,12 +90,13 @@ class WebAPITests(unittest.TestCase):
         self.assertEqual(st, 200)
         r = body["results"][0]
         self.assertEqual(r["status"], 200)
-        self.assertTrue(r["report"]["gate"]["breached"])
+        self.assertTrue(json.loads(r["report"])["gate"]["breached"])
 
     def test_gate_pass(self):
         st, body = handle_audit({"entries": [{"path": str(self.heavy)}],
                                  "max_ai_ratio": 1.0})
-        self.assertFalse(body["results"][0]["report"]["gate"]["breached"])
+        self.assertFalse(
+            json.loads(body["results"][0]["report"])["gate"]["breached"])
 
     def test_comparison_survives_one_bad_side(self):
         st, body = handle_audit({"entries": [
@@ -129,18 +140,35 @@ class WebAPITests(unittest.TestCase):
         st, body = self.audit(since="2999-01-01")
         r = body["results"][0]
         self.assertEqual(r["status"], 400)
-        self.assertIn("window-empty", r["error"]["detail"])
+        # The code field carries the CLI's own code for the same failure —
+        # the web used to collapse it to a generic "value-error" and hide
+        # the code in the detail text.
+        self.assertEqual(r["error"]["code"], "window-empty")
+        self.assertIn("window", r["error"]["detail"])
 
     def test_window_inverted_is_per_entry_400(self):
         st, body = self.audit(since="2026-06-01", until="2026-01-01")
         r = body["results"][0]
         self.assertEqual(r["status"], 400)
-        self.assertIn("window-invalid", r["error"]["detail"])
+        self.assertEqual(r["error"]["code"], "window-invalid")
+        self.assertIn("since", r["error"]["detail"])
 
     # ---- request-level errors: the whole request is 400 ----
 
     def test_bad_entries(self):
         for bad in ({}, {"entries": []}, {"entries": [1, 2, 3]}):
+            st, body = handle_audit(bad)
+            self.assertEqual(st, 400)
+            self.assertEqual(body["error"]["code"], "bad-entries")
+
+    def test_entries_must_be_objects(self):
+        # A well-sized list of non-objects is a malformed REQUEST. Before
+        # this was checked, the handler raised AttributeError out of the
+        # HTTP layer: with HTTP/1.1 keep-alive the client got a dropped
+        # connection instead of a 400.
+        for bad in ({"entries": [1]}, {"entries": [1, 2]},
+                    {"entries": ["nope"]},
+                    {"entries": [{"path": "x"}, 7]}):
             st, body = handle_audit(bad)
             self.assertEqual(st, 400)
             self.assertEqual(body["error"]["code"], "bad-entries")

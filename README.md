@@ -387,6 +387,7 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - [x] v1.3.0 — installable from PyPI (`pip install ghostauthor`; OIDC trusted publishing, no token in the repo) + the evidence JSON contract frozen (`schema/evidence.schema.json`, enforced by verify — a mutation goes red) + `docs/roster.md` (writing guide) + `README.zh.md`
 - [x] v1.4.0 — read-side surface parity: the MCP `repo_authorship_report` gains the full option surface (scope, window, roster, gate) and a second read-only tool `commit_evidence`; the web gains `/api/evidence` + an in-dashboard evidence drill-down. Every surface now serves the **same bytes** as the CLI for the same request — parity by construction, not by test, because report/evidence selection is one shared function
 - [x] v1.5.0 — **product surface**: `coverage` (adoption diagnosis — separates an unrecognized signature from a missing one, and never guesses), `--format html` (a self-contained, timestamp-free brief that can be mailed or archived), `portfolio` (multi-repository aggregate, weighted by commit, partial failures recorded). Read-side additions only — no schema bump
+- [x] v1.6.0 — **one definition of a boundary**: scope / window / roster / session gap / gate move into `ghostauthor/options.py`, called by the CLI, the MCP server and the web transport. Fixes the drift the copies had accumulated — `/api/audit` silently ignored `base`, lost the CLI's error codes, and spelled the scope flag differently from its own siblings. Read-side only — no schema bump
 
 ## Free and commercial
 
@@ -413,7 +414,7 @@ schema next year. If you need the commercial surface, open an issue with
 
 ## Tests
 
-236 tests pin **properties**, not coverage:
+296 tests pin **properties**, not coverage:
 
 - **Reproducibility** — same repo state ⇒ identical report, regardless of input order
 - **Trailer-block semantics** — negative cases: signature in the body, signature followed by prose, CRLF messages, missing email, lowercase keys, continuation lines
@@ -442,6 +443,12 @@ schema next year. If you need the commercial surface, open an issue with
 - **Portfolio weighting** — the aggregate is `sum(signed)/sum(commits)`, never a mean of per-repository ratios (pinned with 1 commit at 100% vs 99 at 0%); a failed repository is counted, named and excluded from the totals instead of aborting the run; all repositories failing is `portfolio-empty` (exit 2); per-repository agent detail expands the rollup
 - **HTML brief** — byte-stable (no generation timestamp), self-contained (no `<script>`, no remote URL), every interpolated value escaped, and the method statement travels with the document — the properties that let it sit next to the JSON as evidence rather than as a screenshot
 - **Web coverage** — `/api/coverage` serves the CLI's `coverage` bytes for the same request; the dashboard shows an inline diagnosis prompt only below 20% coverage (a healthy ledger is never nagged), and its error mapping matches the exit codes
+- **Option parity** — one definition of scope / window / roster / session gap / gate (`ghostauthor/options.py`), called by all three surfaces: the same bad request yields the **same error code** on the CLI, the MCP server and the web transport, and the web serves the CLI's exact bytes for the same scope — including a two-branch diff, which `/api/audit` used to silently ignore; `all` and `all_refs` are synonyms everywhere; a malformed entry is a `400`, never an unhandled exception
+- **Byte identity is compared as bytes** — the web serves the report as the CLI's exact byte string, and the assertions compare **raw strings**, not parsed dicts: a re-serialization (different key order, different indentation) parses to the same thing and would pass a dict comparison while making the claim false
+- **The write path sees every signature** — the conflict guard scans the whole message, not just git's trailer block: a commit already signed by another agent is refused even when prose follows the trailer (and signing is still idempotent when *our* signature is the one followed by prose)
+- **Nothing hides** — an unmatched co-author is surfaced on *every* commit, not only on the ones whose whole bucket is `cosigned`; the `trailer-in-body` finding quotes the offending prose line, not the legitimate trailer that follows it
+- **A malformed request never kills a server** — one bad JSON-RPC line is answered with a JSON-RPC error and the MCP server keeps serving; a stalled request body is answered and the connection closed instead of parking a worker thread
+- **The same bound means the same thing everywhere** — the accepted ISO 8601 subset is pinned by an explicit parser, not by the interpreter's `fromisoformat`, so a bound behaves identically on every supported Python
 
 One click runs the whole matrix (roster → unit suite → 3 deterministic
 fixture repos → CLI exit codes → real MCP `initialize`/`tools/list`/

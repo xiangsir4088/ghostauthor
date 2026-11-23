@@ -9,6 +9,177 @@ The read-side JSON contract is frozen (`schema_version` 1, see
 a rename, deletion or semantic change bumps it. The write path is opt-in and
 additive in every release below — no repository is ever signed by default.
 
+## [1.6.0] — 2026-11-23
+
+**One definition of a boundary.** The CLI, the MCP server and the web
+transport each parsed the same request-shaped options — scope, time
+window, roster, session gap, gate — and each did it in its own copy of
+the code. The copies had already drifted, and the drift was not
+cosmetic: two of the differences produced **wrong answers that looked
+right**.
+
+This release moves those semantics into one module (`ghostauthor/
+options.py`) and makes all three surfaces call it — the same lesson the
+project already applied to the window-bound parser (`models.py`) and the
+evidence selection (`evidence.select_evidence_commits`).
+
+**No schema bump.** `report.schema.json`, `evidence.schema.json`,
+`coverage.schema.json` and `portfolio.schema.json` are untouched; every
+read-side contract keeps `schema_version` `"1"`.
+
+### Added
+- **`ghostauthor/options.py`** — the single definition of scope, window,
+  roster, session gap and gate. `Scope` carries the one spelling of
+  "what was scanned" (`base..target`, `all`, `HEAD`) that used to be
+  written out four separate times; `resolve_window`,
+  `resolve_roster`, `resolve_session_gap` and `resolve_gate` raise one
+  `OptionError` shape (`"<code>: <detail>"`) that every surface already
+  knew how to print.
+- **`/api/audit` accepts `base`** — the two-branch diff the other two
+  web endpoints already supported.
+- **The web transport accepts `all` *and* `all_refs` everywhere**, and
+  so does the MCP server. The two spellings are synonyms, not a trap.
+- **`tests/test_options.py`** — 37 tests pinning the boundaries and the
+  surface-parity property (one request in, the same code and the same
+  bytes out of all three surfaces).
+- **verify step 28** — the option-parity matrix: the same bad request
+  must produce the same code on the CLI, the MCP server and the web
+  transport, and the web must serve the CLI's exact bytes for the same
+  scope, including a two-branch diff.
+- **verify step 17, hardened** — it now pins the **owner** in every
+  `uses:` line to the repository this project publishes to, and it
+  requires a declared floating alias to be a **real tag**. Declaring
+  `v1` in the docs while no `v1` tag existed was the half-fix that
+  shipped the broken template.
+
+### Fixed
+- **`/api/audit` silently ignored `base`** — asking for a two-branch
+  diff returned the whole history. For an audit tool this is the worst
+  failure mode there is: a wrong answer that looks right.
+- **`/api/audit` crashed on a malformed entry** — a well-sized list of
+  non-objects raised `AttributeError` out of the HTTP layer. With
+  HTTP/1.1 keep-alive the client saw a dropped connection instead of a
+  `400`. A malformed entry is a malformed *request* and is now rejected
+  as one (`bad-entries`).
+- **The web audit endpoint lost the CLI's error codes** — every option
+  error collapsed into a generic `value-error` with the real code
+  hidden in the detail text. All three endpoints now report the CLI's
+  own code (`window-empty`, `ref-invalid`, `roster-error`, …).
+- **The scope flag was spelled two ways** — `all_refs` in `/api/audit`,
+  `all` in `/api/evidence` and `/api/coverage`. A client that guessed
+  wrong asked for all refs and silently got HEAD.
+- **The CLI reported `--all --ref` in argparse's words** (no code),
+  while the MCP server and the web transport reported `ref-conflict` —
+  the code `docs/schema.md` documents. The CLI now reports the same
+  code; the argparse mutually-exclusive group was removed so all three
+  surfaces answer identically.
+- **An unexpected exception in an HTTP handler escaped to the server
+  loop** — the client got no response at all instead of a `500`. The
+  handler now has a last line of defence, and `OSError` (an unreadable
+  path) is mapped to `500` rather than dropped.
+- **An unbounded `Content-Length` was read into memory** before the
+  request was validated. Bodies above 32 MiB are refused with `413`.
+- **The shipped consumer template pointed at a repository that does not
+  exist**: `uses: xiangsir/ghostauthor@v1` resolved to a GitHub
+  repository that is not there (the project publishes as
+  `xiangsir4088/ghostauthor`). Copying the documented template failed
+  with "Unable to resolve action" — for two independent reasons: the
+  wrong owner *and* a ref that was never created.
+- **CHANGELOG.md was missing its `## [1.4.0]` section header** — v1.4.0's
+  content rendered as part of v1.5.0, and the `[1.4.0]` link
+  definition at the bottom of the file was orphaned.
+- **The packaged skill documented a command that does not run** —
+  `ghostauthor <path> <sha> evidence` is rejected by argparse (exit 2);
+  the form is `ghostauthor evidence <path> <sha>`. The skill's version
+  metadata was also stale, and it said nothing about `coverage`,
+  `portfolio` or the HTML brief.
+
+### Fixed
+- **The web did NOT serve the CLI's bytes.** `/api/audit` parsed the
+  report back into a dict and re-serialized it, so the served document
+  was compacted and lost the canonical key order — the "byte-identical to
+  the CLI" claim was false for one of the three read surfaces (the MCP
+  tool and `/api/evidence` already returned the exact byte string). The
+  endpoint now serves the CLI's bytes as a string, like its siblings, and
+  the dashboard parses that string — so the "download .json" button
+  delivers the CLI's artifact, not a browser re-serialization of it.
+  **The assertions that "covered" it compared parsed dicts**, which cannot
+  tell a re-serialization from the original; they now compare raw bytes.
+- **The signer's conflict guard could be bypassed.** It looked only at
+  git's trailer block — the final paragraph. A commit that already
+  carried another agent's signature but had prose after the trailer block
+  (a tool marker, a note) was signed a second time instead of being
+  refused: two agents on one commit, which is exactly the state the
+  module says it never creates. The read side and the write side now
+  share one definition of "this commit carries a signature"
+  (`gitparse.iter_coauthor_lines`), so they cannot disagree about it.
+- **An unmatched co-author was invisible on an agent-signed commit.**
+  The `cosigned-unknown` finding was emitted only for commits whose whole
+  bucket was `cosigned`, so a commit signed by a known agent *and* an
+  unknown party hid the unknown party completely. The finding is now
+  emitted for any commit; `cosigned_evidence` keeps its documented
+  meaning.
+- **The `trailer-in-body` finding quoted the wrong line.** git puts
+  trailers LAST, so a prose mention comes *before* them — counting
+  positions quoted the legitimate trailer instead of the offending prose,
+  and the wrong line propagated into the text, markdown, HTML and SARIF
+  renderings. The offending prose line is now quoted.
+- **One malformed JSON-RPC line killed the MCP server.** A peer sending a
+  JSON array, a number or a string ended the process — taking every
+  subsequent request with it. The server now answers with a JSON-RPC
+  error and keeps serving; the three error classes are distinguished
+  (`-32602` invalid params, `-32601` unknown method, `-32603` internal).
+- **An inverted window returned different codes on different surfaces.**
+  The evidence surfaces filtered first and reported `window-empty` where
+  the audit and coverage surfaces reported `window-invalid`. The bounds
+  are now validated before filtering, so all three report
+  `window-invalid`.
+- **The web rejected a request the CLI and the MCP accepted.** The scope
+  is irrelevant once the auditor names the commits explicitly — the CLI
+  and the MCP ignore it there, the web rejected it. The rule now lives in
+  one place (`options.resolve_scope`).
+- **A client that under-delivered its body held a worker thread
+  forever.** `Content-Length` bounded the size, not the stall; with
+  keep-alive the thread parked indefinitely. The handler now has a socket
+  timeout, and a stalled body is answered and the connection closed.
+- **A window bound behaved differently on different supported
+  interpreters.** `datetime.fromisoformat` was used, and CPython 3.11
+  widened it to accept most ISO 8601 forms while 3.9 accepts almost
+  none — so the same bound was accepted on one supported Python and
+  rejected on another. The accepted set is now pinned by an explicit
+  parser in `models.py`, not by the interpreter.
+- **A non-ASCII digit lost the documented error code.** `"²".isdigit()`
+  is true but `int("²")` raises, so the documented
+  `window-bound-invalid` never happened and a raw Python message
+  escaped to the caller.
+- **`all_refs: false` could not override a stale `all: true`** — a
+  client sending both spellings got all-refs when it asked for HEAD. An
+  explicit `all_refs` now wins.
+- **A non-integral session gap was silently truncated** (`1.9` became
+  `1`), accepting a value the CLI's own argparse refuses.
+- **The portfolio brief hardcoded `HEAD`** in its scope row, so a
+  portfolio produced with `--ref feature/x` stated the wrong scope.
+- **The audit brief's "Regenerate" command could not work.** It emitted
+  `--ref all` for the all-refs scope (not a git revision) and
+  `--ref main..HEAD` for a range. It now emits `--all` / `--base` /
+  `--ref` as the scope requires — in a document whose purpose is
+  reproducibility, a command that fails is worse than a wrong number.
+
+### Changed
+- The CLI, the MCP server and the web transport resolve scope, window,
+  roster, session gap and gate through `ghostauthor/options.py`.
+  Behaviour is unchanged where it was already correct; where the copies
+  disagreed, the documented code wins.
+- The CLI's `--all` / `--ref` are no longer an argparse mutually
+  exclusive group: the conflict is reported as `ref-conflict`, the code
+  the other two surfaces return and `docs/schema.md` documents.
+- `/api/audit` returns the report as a **string** (the CLI's exact
+  bytes) rather than an embedded object, matching `/api/evidence` and
+  `/api/coverage`. The dashboard parses it.
+
+236 → 296 tests / verify 27 → 28 steps green.
+
+
 ## [1.5.0] — 2026-11-22
 
 **Product surface**: the ledger stops being a command you have to interpret
@@ -71,7 +242,7 @@ and `evidence.schema.json` are untouched, and the new outputs carry their own
 
 199 → 236 tests / verify 27 steps green.
 
-
+## [1.4.0] — 2026-11-22
 
 **Surface parity**: the third skin catches up with the read side. The
 ledger was already byte-identical across CLI / MCP / Web for the audit;
@@ -371,6 +542,7 @@ First release.
 - **Unborn-HEAD repositories** (everything staged, nothing committed) are
   classified `no-commits`, not a git failure.
 
+[1.6.0]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.6.0
 [1.4.0]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.4.0
 [1.3.0]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.3.0
 [1.2.0]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.2.0

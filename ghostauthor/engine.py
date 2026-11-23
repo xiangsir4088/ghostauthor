@@ -8,17 +8,14 @@ Report — that is the reproducibility invariant, and it is tested.
 """
 from __future__ import annotations
 
-import re
 from typing import Dict, List, Optional, Tuple
 
 from .models import (ALL_BUCKETS, BUCKET_AGENT, BUCKET_COSIGNED,
-                     BUCKET_UNSIGNED, AgentStats, AuthorStats, CommitInfo,
-                     Finding, Report, Session)
+                     BUCKET_UNSIGNED, COAUTHOR_LINE_RE, AgentStats,
+                     AuthorStats, CommitInfo, Finding, Report, Session)
 from .roster import AgentRule, Roster
 
 DEFAULT_SESSION_GAP_MINUTES = 360
-
-_BODY_COAUTH_RE = re.compile(r"^\s*co-authored-by\s*:", re.IGNORECASE)
 
 
 def attribute_commit(c: CommitInfo, roster: Roster
@@ -100,21 +97,40 @@ def build_report(commits: List[CommitInfo],
                     rule="trailer-no-email", severity="info",
                     evidence=f"{c.sha[:12]}: {t.raw}",
                     detail="matched by name only; trailer carries no <email>"))
-
-        if bucket == BUCKET_COSIGNED:
-            for t in c.trailers:
-                cosigned_evidence.append(f"{c.sha[:12]}: {t.raw}")
+            elif rule is None:
+                # An unmatched co-author is worth surfacing on EVERY commit,
+                # not only on the ones whose whole bucket is `cosigned`: a
+                # commit signed by a known agent AND an unknown party would
+                # otherwise hide the unknown party completely — and "is
+                # anyone else on this commit?" is exactly the question a
+                # reviewer asks. The finding is additive; `cosigned_evidence`
+                # keeps its documented meaning (the evidence for the
+                # `cosigned` bucket).
                 findings.append(Finding(
                     rule="cosigned-unknown", severity="warn",
                     evidence=f"{c.sha[:12]}: {t.raw}",
                     detail="Co-Authored-By present but no roster rule matched"))
 
+        if bucket == BUCKET_COSIGNED:
+            for t in c.trailers:
+                cosigned_evidence.append(f"{c.sha[:12]}: {t.raw}")
+
+        # A Co-Authored-By-shaped line that is NOT part of the trailer block
+        # is prose: git does not treat it as metadata, and neither do we.
+        # The trailer lines are excluded EXPLICITLY — git puts trailers
+        # LAST, so a prose mention comes BEFORE them, and counting positions
+        # would quote the legitimate trailer instead of the offending prose.
+        trailer_lines = set()
+        for t in c.trailers:
+            for ln in t.raw.split("\n"):
+                trailer_lines.add(ln.strip())
         body_hits = [ln.strip() for ln in c.message.splitlines()
-                     if _BODY_COAUTH_RE.match(ln)]
-        if len(body_hits) > len(c.trailers):
+                     if COAUTHOR_LINE_RE.match(ln)
+                     and ln.strip() not in trailer_lines]
+        if body_hits:
             findings.append(Finding(
                 rule="trailer-in-body", severity="warn",
-                evidence=f"{c.sha[:12]}: {body_hits[len(c.trailers)]}",
+                evidence=f"{c.sha[:12]}: {body_hits[0]}",
                 detail="Co-Authored-By line outside the trailer block is prose, "
                        "not metadata — ignored by design"))
         if len(matched_ids) > 1:

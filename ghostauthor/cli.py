@@ -50,13 +50,14 @@ from .evidence import (build_bundle, render_evidence_json,
 from .gitparse import GitError, iter_commits
 from .lint import lint_roster
 from .models import parse_window_value
+from .options import (OptionError, Scope, resolve_gate, resolve_roster,
+                      resolve_session_gap, resolve_window)
 from .portfolio import (build_portfolio, discover_repos, read_repo_list,
                         render_portfolio_html, render_portfolio_json,
                         render_portfolio_text)
 from .report import (render_html, render_json, render_markdown, render_sarif,
                      render_text)
-from .roster import (Roster, RosterError, builtin_roster_path, load_roster,
-                     load_roster_dir)
+from .roster import Roster, builtin_roster_path
 from .signer import (SignError, install_hook, sign_head, sign_message_file,
                      uninstall_hook)
 
@@ -74,12 +75,16 @@ def build_parser() -> argparse.ArgumentParser:
                     "commits in your repo — auditable, reproducible, no LLM.")
     p.add_argument("path", nargs="?", default=".",
                    help="repository path (default: current directory)")
-    ref_group = p.add_mutually_exclusive_group()
-    ref_group.add_argument("--all", action="store_true",
-                           help="scan all refs instead of HEAD")
-    ref_group.add_argument("--ref", metavar="REF",
-                           help="scan one ref (branch/tag/commit) instead "
-                                "of HEAD")
+    # --all and --ref are deliberately NOT an argparse mutually-exclusive
+    # group: argparse reports the conflict in its own words, with no code,
+    # while the MCP server and the web transport report `ref-conflict`.
+    # The conflict is enforced by `options.Scope.validate()` instead, so all
+    # three surfaces answer the same request with the same code — which is
+    # what docs/schema.md documents.
+    p.add_argument("--all", action="store_true",
+                   help="scan all refs instead of HEAD")
+    p.add_argument("--ref", metavar="REF",
+                   help="scan one ref (branch/tag/commit) instead of HEAD")
     p.add_argument("--base", metavar="REF",
                    help="two-branch diff: scan only the commits reachable "
                         "from the target (HEAD or --ref) but not from REF "
@@ -350,13 +355,15 @@ def _build_evidence_parser() -> argparse.ArgumentParser:
     p.add_argument("shas", nargs="*", metavar="SHA",
                    help="commits to produce evidence for (default: every "
                         "commit in scope; order preserved)")
-    scope = p.add_mutually_exclusive_group()
-    scope.add_argument("--all", action="store_true",
-                       help="scope: all refs instead of HEAD (ignored "
-                            "when SHAs are given)")
-    scope.add_argument("--ref", metavar="REF",
-                       help="scope: one ref instead of HEAD (ignored "
-                            "when SHAs are given)")
+    # Not an argparse mutually-exclusive group — the scope conflict is
+    # enforced by `options.Scope.validate()` so the CLI reports the same
+    # `ref-conflict` code the MCP server and the web transport report.
+    p.add_argument("--all", action="store_true",
+                   help="scope: all refs instead of HEAD (ignored "
+                        "when SHAs are given)")
+    p.add_argument("--ref", metavar="REF",
+                   help="scope: one ref instead of HEAD (ignored "
+                        "when SHAs are given)")
     p.add_argument("--base", metavar="REF",
                    help="scope: git range REF..target (mutually exclusive "
                         "with --all; ignored when SHAs are given)")
@@ -390,12 +397,16 @@ def evidence_main(argv: Optional[List[str]] = None) -> int:
         return 2
     assert roster is not None
 
+    req_scope = Scope(all_refs=args.all, ref=args.ref, base=args.base)
     try:
-        since = (_parse_window_value(args.since)
-                 if args.since is not None else None)
-        until = (_parse_window_value(args.until)
-                 if args.until is not None else None)
-    except ValueError as exc:
+        # Scope only matters when shas are omitted (the CLI ignores scope
+        # once the auditor names the commits) — the same rule the MCP
+        # `commit_evidence` tool and the web /api/evidence endpoint apply,
+        # and defined once in `options.resolve_scope`.
+        if not args.shas:
+            req_scope.validate()
+        since, until = resolve_window(args.since, args.until)
+    except OptionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -404,8 +415,8 @@ def evidence_main(argv: Optional[List[str]] = None) -> int:
         # the web /api/evidence endpoint: window + ordering live inside it, so
         # all three surfaces select the same commits for the same request.
         commits = select_evidence_commits(
-            args.path, args.shas, all_refs=args.all, ref=args.ref,
-            base=args.base, since=since, until=until)
+            args.path, args.shas, **req_scope.git_kwargs,
+            since=since, until=until)
     except (GitError, ValueError) as exc:
         # GitError covers sha-unknown (an explicit SHA the repo does not
         # hold) exactly like the audit covers an unknown ref: usage error,
@@ -419,10 +430,7 @@ def evidence_main(argv: Optional[List[str]] = None) -> int:
             print(f"error: bundle-exists: {bundle_dir} already exists — "
                   "refusing to overwrite evidence", file=sys.stderr)
             return 2
-        scope = (f"{args.base}..{args.ref or 'HEAD'}"
-                 if (args.base is not None and not args.shas)
-                 else ("sha-list" if args.shas
-                       else ("all" if args.all else (args.ref or "HEAD"))))
+        scope = ("sha-list" if args.shas else req_scope.label)
         try:
             # report.json = what the audit says about EXACTLY this
             # selection, through the frozen read-side pipeline.
@@ -480,11 +488,13 @@ def _build_coverage_parser() -> argparse.ArgumentParser:
                     "reported as hints, never as attributions.")
     p.add_argument("path", nargs="?", default=".",
                    help="repository path (default: current directory)")
-    scope = p.add_mutually_exclusive_group()
-    scope.add_argument("--all", action="store_true",
-                       help="scan all refs instead of HEAD")
-    scope.add_argument("--ref", metavar="REF",
-                       help="scan one ref (branch/tag/commit) instead of HEAD")
+    # Not an argparse mutually-exclusive group — the scope conflict is
+    # enforced by `options.Scope.validate()` so the CLI reports the same
+    # `ref-conflict` code the MCP server and the web transport report.
+    p.add_argument("--all", action="store_true",
+                   help="scan all refs instead of HEAD")
+    p.add_argument("--ref", metavar="REF",
+                   help="scan one ref (branch/tag/commit) instead of HEAD")
     p.add_argument("--base", metavar="REF",
                    help="two-branch diff (git range REF..target); mutually "
                         "exclusive with --all")
@@ -513,23 +523,16 @@ def coverage_main(argv: Optional[List[str]] = None) -> int:
         return 2
     assert roster is not None
 
-    if args.all and args.base is not None:
-        print("error: ref-conflict: --base needs a single target (HEAD or "
-              "--ref), not --all", file=sys.stderr)
-        return 2
-
+    scope = Scope(all_refs=args.all, ref=args.ref, base=args.base)
     try:
-        since = (_parse_window_value(args.since)
-                 if args.since is not None else None)
-        until = (_parse_window_value(args.until)
-                 if args.until is not None else None)
-    except ValueError as exc:
+        scope.validate()
+        since, until = resolve_window(args.since, args.until)
+    except OptionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
     try:
-        commits = iter_commits(args.path, all_refs=args.all, ref=args.ref,
-                               base=args.base)
+        commits = iter_commits(args.path, **scope.git_kwargs)
     except (GitError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -538,8 +541,7 @@ def coverage_main(argv: Optional[List[str]] = None) -> int:
         cov = build_coverage(
             commits, roster,
             repo_path=str(Path(args.path).resolve()),
-            ref=(f"{args.base}..{args.ref or 'HEAD'}" if args.base is not None
-                 else ("all" if args.all else (args.ref or "HEAD"))),
+            ref=scope.label,
             since=since, until=until)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -603,11 +605,8 @@ def portfolio_main(argv: Optional[List[str]] = None) -> int:
     assert roster is not None
 
     try:
-        since = (_parse_window_value(args.since)
-                 if args.since is not None else None)
-        until = (_parse_window_value(args.until)
-                 if args.until is not None else None)
-    except ValueError as exc:
+        since, until = resolve_window(args.since, args.until)
+    except OptionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -648,14 +647,15 @@ def portfolio_main(argv: Optional[List[str]] = None) -> int:
 
 def _load_roster(args: argparse.Namespace) -> Tuple[Optional[Roster],
                                                     Optional[str]]:
-    """Shared roster loading: (roster, error). Never raises."""
-    if args.roster is not None and args.roster_dir is not None:
-        return None, "roster-conflict: use --roster or --roster-dir, not both"
+    """Shared roster loading: (roster, error). Never raises.
+
+    The semantics live in `options.resolve_roster` — the same function the
+    MCP server and the web transport call — so all three surfaces reject
+    the same inputs with the same code and the same wording.
+    """
     try:
-        if args.roster_dir is not None:
-            return load_roster_dir(args.roster_dir), None
-        return load_roster(args.roster or builtin_roster_path()), None
-    except RosterError as exc:
+        return resolve_roster(args.roster, args.roster_dir), None
+    except OptionError as exc:
         return None, str(exc)
 
 
@@ -699,21 +699,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     assert roster is not None
 
-    if args.all and args.base is not None:
-        print("error: ref-conflict: --base needs a single target (HEAD or "
-              "--ref), not --all", file=sys.stderr)
-        return 2
-
+    scope = Scope(all_refs=args.all, ref=args.ref, base=args.base)
     try:
-        since = _parse_window_value(args.since) if args.since is not None else None
-        until = _parse_window_value(args.until) if args.until is not None else None
-    except ValueError as exc:
+        scope.validate()
+        since, until = resolve_window(args.since, args.until)
+        gap = resolve_session_gap(args.session_gap)
+        max_ratio = resolve_gate(args.max_ai_ratio)
+    except OptionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
     try:
-        commits = iter_commits(args.path, all_refs=args.all, ref=args.ref,
-                               base=args.base)
+        commits = iter_commits(args.path, **scope.git_kwargs)
     except (GitError, ValueError) as exc:
         # GitError = repository problem; ValueError = a bad ref (ref-conflict
         # / ref-invalid, reachable via the equals form --ref=-foo). Both are
@@ -725,10 +722,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         report = build_report(
             commits, roster,
             repo_path=str(Path(args.path).resolve()),
-            ref=(f"{args.base}..{args.ref or 'HEAD'}" if args.base is not None
-                 else ("all" if args.all else (args.ref or "HEAD"))),
-            session_gap_minutes=args.session_gap,
-            max_ai_ratio=args.max_ai_ratio,
+            ref=scope.label,
+            session_gap_minutes=gap,
+            max_ai_ratio=max_ratio,
             since=since,
             until=until,
         )

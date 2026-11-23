@@ -110,6 +110,36 @@ Boundary semantics are pinned by tests: exactly at the limit is a PASS;
 a window includes `--since` and excludes `--until`; an inverted or empty
 window is a contract error (exit 2), never a silently empty report.
 
+## Option semantics (shared by every surface)
+
+Scope, time window, roster, session gap and gate are defined **once**, in
+`ghostauthor/options.py`, and the CLI, the MCP server and the web
+transport all call it. The contract is therefore not "the CLI's behaviour,
+mirrored elsewhere" — it is one behaviour, reachable from four places.
+
+| Option | Accepted spellings | Semantics | Code on failure |
+|---|---|---|---|
+| scope | `--all` / `--base` / `--ref`; `all` and `all_refs` are synonyms on every transport | `--base` scans the git range `REF..target`; the reported label is `base..target`, `all`, or the ref name | `ref-conflict`, `ref-invalid` |
+| window | `--since` / `--until` | `since` inclusive, `until` exclusive; epoch seconds, `YYYY-MM-DD` (UTC) or ISO 8601 | `window-bound-invalid`, `window-empty`, `window-invalid` |
+| roster | `--roster` / `--roster-dir` | one file, or every `*.json` in a directory merged in sorted filename order | `roster-conflict`, `roster-error` |
+| session gap | `--session-gap` | positive minutes | `session-gap-invalid` |
+| gate | `--max-ai-ratio` | `0..1`; a ratio exactly at the limit is a PASS | `gate-limit-invalid` |
+
+Two properties are enforced by `verify.py` step 28 and
+`tests/test_options.py`:
+
+1. **Same request, same code.** A rejected request produces the same
+   error code on the CLI, the MCP server and the web transport — the code
+   the CLI prints, not a transport-specific variant.
+2. **Same request, same bytes.** The web serves the CLI's exact JSON for
+   the same scope, including a two-branch diff.
+
+The transports translate the code into their own channel, and the
+translation is pinned: the web maps request-level option errors to
+`400` (and `404` / `422` for a missing or empty repository), the MCP
+server returns `isError: true` with `error: <code>: <message>`, and the
+CLI exits `2`.
+
 ### Exit codes (the CI contract)
 
 | Code | Meaning |

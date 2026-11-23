@@ -18,7 +18,7 @@ import re
 import subprocess
 from typing import List, Optional, Tuple
 
-from .models import CommitInfo, Trailer
+from .models import COAUTHOR_LINE_RE, CommitInfo, Trailer
 
 # Framing characters: C1 control characters, invisible in prose and
 # effectively never emitted by humans or LLMs into commit messages.
@@ -136,6 +136,31 @@ def parse_trailer_block(message: str) -> List[Trailer]:
         name, email = _split_name_email(m.group(3))
         trailers.append(Trailer(raw="\n".join(raw_lines), name=name, email=email))
     return trailers
+
+
+def iter_coauthor_lines(message: str) -> List[Trailer]:
+    """Every Co-Authored-By-shaped line in the message, wherever it is.
+
+    `parse_trailer_block` applies git's trailer semantics: only the FINAL
+    paragraph counts, so a signature that prose follows is prose to git.
+    This function does not apply that rule — it finds the lines anywhere.
+
+    The write path needs it: if the conflict guard only looked at the
+    trailer block, a commit that already carries another agent's signature
+    would be signed a second time simply because someone added a line
+    after the trailer block (a tool marker, a note). The commit still says
+    who signed it, so the guard must see it — the read side and the write
+    side must not disagree about whether a commit carries a signature.
+    """
+    lines = message.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out: List[Trailer] = []
+    for line in lines:
+        if COAUTHOR_LINE_RE.match(line) is None:
+            continue
+        _, sep, value = line.partition(":")
+        name, email = _split_name_email(value if sep else "")
+        out.append(Trailer(raw=line.strip(), name=name, email=email))
+    return out
 
 
 def _split_name_email(value: str) -> Tuple[str, str]:

@@ -364,6 +364,28 @@ def _bar_segments(report: Report) -> str:
     return "".join(spans)
 
 
+def _scope_flags(ref: str) -> str:
+    """The CLI flags that reproduce this report's scope.
+
+    The scope label is a *description* ("all", "main..HEAD"), not always a
+    ref name — `ghostauthor --ref all` fails, because `all` is not a git
+    revision. The brief tells the reader how to regenerate the document,
+    so that command has to be one that actually works: `--all` for the
+    all-refs scope, `--base`/`--ref` for a range, `--ref` for one ref.
+    """
+    if ref == "all":
+        return "--all"
+    if ".." in ref:
+        base, _, target = ref.partition("..")
+        flags = f"--base {base}"
+        if target and target != "HEAD":
+            flags += f" --ref {target}"
+        return flags
+    if ref and ref != "HEAD":
+        return f"--ref {ref}"
+    return ""
+
+
 def render_html(report: Report, title: str = "AI Code Provenance Audit") -> str:
     """A self-contained brief for a reader who will not run the CLI.
 
@@ -530,8 +552,8 @@ def render_html(report: Report, title: str = "AI Code Provenance Audit") -> str:
                         "first match wins"),
         ("Not used", "no LLM, no network, no style classifier, no wall clock"),
         ("Scope", f"<code>{_esc(report.ref)}</code>, {total} commits"),
-        ("Regenerate", f"<code>ghostauthor &lt;repo&gt; --ref "
-                       f"{_esc(report.ref)} --format html</code>"),
+        ("Regenerate", f"<code>ghostauthor &lt;repo&gt; "
+                       f"{_esc(_scope_flags(report.ref))} --format html</code>"),
         ("Tool", f"ghostauthor {_esc(__version__)}, report schema "
                  f"v{SCHEMA_VERSION}"),
     ]

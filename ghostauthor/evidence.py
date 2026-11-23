@@ -50,6 +50,13 @@ def select_evidence_commits(path, shas: Optional[List[str]] = None,
     CLI; each caller translates those into its own error code.
     """
     shas = list(shas) if shas else []
+    if since is not None and until is not None and since >= until:
+        # Validated BEFORE filtering, so the contradictory bounds are
+        # reported as `window-invalid` — the code the audit and the
+        # coverage surfaces return for the same request. Filtering first
+        # would report `window-empty`, which is the wrong diagnosis: the
+        # window is not empty of commits, it is invalid.
+        raise ValueError("window-invalid: since must be before until")
     if shas:
         commits = [get_commit(str(path), s) for s in shas]
     else:
