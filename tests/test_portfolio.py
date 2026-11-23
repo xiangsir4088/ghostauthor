@@ -84,7 +84,12 @@ class WeightingTests(unittest.TestCase):
 class DiscoveryTests(unittest.TestCase):
     def test_finds_nested_repositories_and_prunes_inside_them(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            # resolve() on both sides: Windows CI TEMP is reported as a 8.3
+            # short name (C:\Users\RUNNER~1\...) while discover_repos() walks
+            # the resolved long name (C:\Users\runneradmin\...). The two are
+            # the same directory but different strings, so relative_to() would
+            # raise "is not in the subpath". Normalise before comparing.
+            root = Path(tmp).resolve()
             for rel in ("a", "b", "a/vendored", "node_modules/pkg", "deep/c/d"):
                 (root / rel / ".git").mkdir(parents=True)
             found = [p.relative_to(root).as_posix()
