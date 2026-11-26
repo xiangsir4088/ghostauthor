@@ -29,7 +29,7 @@ from .evidence import render_evidence_json, select_evidence_commits
 from .gitparse import GitError, iter_commits
 from .options import (OptionError, resolve_gate, resolve_roster,
                       resolve_scope, resolve_session_gap, resolve_window,
-                      scope_from_mapping, split_code)
+                      split_code)
 from .report import render_json
 from .roster import Roster
 
@@ -59,7 +59,6 @@ def _audit_one(entry: Dict[str, Any], roster: Roster, since: Optional[int],
     window, ...) are reported INSIDE the entry — they never abort the other
     entry, which is what makes side-by-side comparison useful.
     """
-    scope = scope_from_mapping(entry)
     result: Dict[str, Any] = {"path": entry.get("path"), "ref": None,
                               "report": None, "error": None}
 
@@ -69,9 +68,11 @@ def _audit_one(entry: Dict[str, Any], roster: Roster, since: Optional[int],
                                              "path is required"))
         return result
     try:
-        # Validate BEFORE using scope.label: a mistyped scope must be
-        # rejected, not rendered into an answer that looks authoritative.
-        scope.validate()
+        # ONE definition of the scope rules — `options.resolve_scope`, the
+        # same function the CLI and the MCP server call. It validates too:
+        # a mistyped scope must be rejected, not rendered into an answer
+        # that looks authoritative.
+        scope = resolve_scope(entry)
     except OptionError as exc:
         result.update(status=400, error=_err(exc.code, exc.detail))
         return result

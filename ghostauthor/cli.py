@@ -50,7 +50,7 @@ from .evidence import (build_bundle, render_evidence_json,
 from .gitparse import GitError, iter_commits
 from .lint import lint_roster
 from .models import parse_window_value
-from .options import (OptionError, Scope, resolve_gate, resolve_roster,
+from .options import (OptionError, resolve_gate, resolve_roster, resolve_scope,
                       resolve_session_gap, resolve_window)
 from .portfolio import (build_portfolio, discover_repos, read_repo_list,
                         render_portfolio_html, render_portfolio_json,
@@ -397,14 +397,15 @@ def evidence_main(argv: Optional[List[str]] = None) -> int:
         return 2
     assert roster is not None
 
-    req_scope = Scope(all_refs=args.all, ref=args.ref, base=args.base)
     try:
-        # Scope only matters when shas are omitted (the CLI ignores scope
-        # once the auditor names the commits) — the same rule the MCP
-        # `commit_evidence` tool and the web /api/evidence endpoint apply,
-        # and defined once in `options.resolve_scope`.
-        if not args.shas:
-            req_scope.validate()
+        # ONE definition of the scope rules, shared with the MCP server and
+        # the web transport: `options.resolve_scope` knows that a scope only
+        # matters when the commits are NOT named explicitly (the auditor
+        # already chose them), and it validates the rest. The CLI does not
+        # keep its own copy of that rule.
+        req_scope = resolve_scope(
+            {"all": args.all, "ref": args.ref, "base": args.base},
+            shas_given=bool(args.shas))
         since, until = resolve_window(args.since, args.until)
     except OptionError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -523,9 +524,9 @@ def coverage_main(argv: Optional[List[str]] = None) -> int:
         return 2
     assert roster is not None
 
-    scope = Scope(all_refs=args.all, ref=args.ref, base=args.base)
     try:
-        scope.validate()
+        # ONE definition of the scope rules — see `options.resolve_scope`.
+        scope = resolve_scope({"all": args.all, "ref": args.ref, "base": args.base})
         since, until = resolve_window(args.since, args.until)
     except OptionError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -610,6 +611,13 @@ def portfolio_main(argv: Optional[List[str]] = None) -> int:
     try:
         since, until = resolve_window(args.since, args.until)
         max_ratio = resolve_gate(args.max_ai_ratio)
+        # The session gap is validated HERE, before any repository is
+        # scanned. Validated inside the per-repository scan instead, an
+        # invalid gap was caught per repo and recorded as "this repository
+        # failed" — so every repository failed and the operator saw
+        # `portfolio-empty: every repository failed to scan` instead of the
+        # real cause. A bad option must be a request error, once.
+        gap = resolve_session_gap(args.session_gap)
     except OptionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -627,7 +635,7 @@ def portfolio_main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     pf = build_portfolio(paths, roster, ref=args.ref,
-                         session_gap_minutes=args.session_gap,
+                         session_gap_minutes=gap,
                          since=since, until=until, root=args.root,
                          max_ai_ratio=max_ratio)
 
@@ -706,9 +714,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     assert roster is not None
 
-    scope = Scope(all_refs=args.all, ref=args.ref, base=args.base)
     try:
-        scope.validate()
+        # ONE definition of the scope rules — see `options.resolve_scope`.
+        # The CLI does not keep its own copy of "which scope is valid" or of
+        # the "scope only matters when the commits are named" rule.
+        scope = resolve_scope({"all": args.all, "ref": args.ref, "base": args.base})
         since, until = resolve_window(args.since, args.until)
         gap = resolve_session_gap(args.session_gap)
         max_ratio = resolve_gate(args.max_ai_ratio)

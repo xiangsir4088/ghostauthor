@@ -180,7 +180,9 @@ same request, so they cannot disagree with it.
   `render_evidence_json(commits, roster)` — the bytes validated by
   `evidence.schema.json`
 - **errors**: the same codes as the CLI, plus `sha-unknown` (a SHA in `shas`
-  that is not a commit in the repository)
+  that is not a commit in the repository) and `bad-shas` (`shas` is not an
+  array of strings). A mistyped sha is **rejected, never coerced** — the
+  same rule the web transport applies to the same field.
 
 ## Invariants the schema depends on
 

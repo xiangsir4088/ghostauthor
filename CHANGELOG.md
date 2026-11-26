@@ -9,6 +9,60 @@ The read-side JSON contract is frozen (`schema_version` 1, see
 a rename, deletion or semantic change bumps it. The write path is opt-in and
 additive in every release below — no repository is ever signed by default.
 
+## [Unreleased]
+
+**A second read of the v1.6.x result found the refactor unfinished.** The
+v1.6.0 release moved scope / window / roster / gap / gate into
+`ghostauthor/options.py` so the three surfaces could not drift — but only
+the web transport actually called it. The CLI and the MCP server each kept
+their own copy of the rules, and both carried a comment claiming the rule
+lived in `options.py`. The copies happened to agree, so nothing looked
+wrong; the definition had quietly become three again.
+
+This release finishes the job and closes three more escapes.
+
+### Fixed
+- **All three surfaces now resolve scope through `options.resolve_scope`.**
+  The CLI (`audit`, `evidence`, `coverage`), the MCP server
+  (`repo_authorship_report`, `commit_evidence`, `adoption_diagnosis`) and
+  the web transport (`/api/audit`, `/api/evidence`, `/api/coverage`) call
+  the same function, so the "a scope only matters when the commits are
+  named explicitly" rule has exactly one home. The two hand-rolled copies
+  and the two inaccurate comments are gone.
+- **A mistyped sha is rejected, not coerced.** The MCP server turned
+  `shas: [123]` into `["123"]` and went looking for a commit named
+  `"123"`, while the web transport rejected the same request with
+  `bad-shas` — two surfaces, two answers, for one request. This is the
+  exact "guess instead of reject" the v1.6.1 release was built to stop,
+  so the server now rejects it too.
+- **`portfolio --session-gap` is validated before the scan.** An invalid
+  gap was raised inside the per-repository scan and recorded as "this
+  repository failed"; every repository failed and the operator was told
+  `portfolio-empty: every repository failed to scan` — a wrong summary
+  that hid the real cause. The option is now a request error, reported
+  once, as `session-gap-invalid`.
+- **An unreadable roster is a request error, not a crash.** The loader
+  caught only `JSONDecodeError`, so an `OSError` (permissions, a locked
+  handle) or a file that is not valid UTF-8 escaped it: a traceback and
+  exit 1 on the CLI (the contract is `0/2/4`) and a dead MCP server
+  process — the one failure mode the server explicitly promises never
+  happens. Both are now reported (`roster-unreadable`,
+  `roster-json-invalid`) and the exit code is 2.
+
+### Added
+- **14 negative tests** in `tests/test_hardening.py` (R1-R4), one per
+  defect above. Ten of them fail against the pre-fix code — the suite was
+  extracted from the previous commit and run against it to prove the tests
+  can go red.
+
+**No schema bump**: `report.schema.json`, `evidence.schema.json`,
+`coverage.schema.json` and `portfolio.schema.json` are untouched, and
+`schema_version` stays `"1"`. `roster-unreadable` is a roster-level rule
+id (documented in `docs/roster.md`); the surface-level code stays
+`roster-error`, and `bad-shas` was already the web transport's code.
+
+312 → 326 tests / verify 28 steps green.
+
 ## [1.6.1] — 2026-11-23
 
 **A wrong type is a request error, never a guess.** v1.6 gave the three

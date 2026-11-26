@@ -85,7 +85,8 @@ Rejection, with these ids, never repair:
 | Rule id | Trigger |
 |---|---|
 | `roster-file-missing` / `roster-dir-missing` | the path does not exist |
-| `roster-json-invalid` | not parseable JSON (per file, named) |
+| `roster-json-invalid` | not parseable JSON (per file, named), or not valid UTF-8 |
+| `roster-unreadable` | the file exists but cannot be read (permissions, a locked handle, a vanished mount) — a request error, never a crash |
 | `roster-dir-empty` | a `--roster-dir` without `*.json` files |
 | `roster-top-level` | the document is not an object |
 | `roster-version` | `version` is not a positive integer |

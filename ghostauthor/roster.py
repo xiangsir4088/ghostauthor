@@ -83,6 +83,16 @@ def load_roster(path: Union[str, Path]) -> Roster:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise _fail("roster-json-invalid", str(exc)) from exc
+    except UnicodeDecodeError as exc:
+        raise _fail("roster-json-invalid",
+                    f"{path} is not valid UTF-8: {exc}") from exc
+    except OSError as exc:
+        # An unreadable roster (permissions, a directory in its place, a
+        # locked handle) is a REQUEST error, not a crash. Letting it escape
+        # broke the exit-code contract on the CLI (a traceback and exit 1
+        # instead of 2) and killed the MCP server process outright — the
+        # one failure mode the server promises never happens.
+        raise _fail("roster-unreadable", f"{path}: {exc}") from exc
     return validate_roster(raw, source=str(path))
 
 
@@ -109,6 +119,13 @@ def load_roster_dir(path: Union[str, Path]) -> Roster:
             raw = json.loads(f.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise _fail("roster-json-invalid", f"{f.name}: {exc}") from exc
+        except UnicodeDecodeError as exc:
+            raise _fail("roster-json-invalid",
+                        f"{f.name} is not valid UTF-8: {exc}") from exc
+        except OSError as exc:
+            # Same reason as in `load_roster`: an unreadable file is a
+            # request error, never an escaping exception.
+            raise _fail("roster-unreadable", f"{f}: {exc}") from exc
         r = validate_roster(raw, source=f.name)
         version = max(version, r.version)
         for a in r.agents:

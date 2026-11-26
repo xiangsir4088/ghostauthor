@@ -40,22 +40,27 @@ from .engine import DEFAULT_SESSION_GAP_MINUTES, build_report
 from .evidence import render_evidence_json, select_evidence_commits
 from .gitparse import GitError, iter_commits
 from .options import (OptionError, Scope, resolve_gate, resolve_roster,
-                      resolve_session_gap, resolve_window, scope_from_mapping)
+                      resolve_scope, resolve_session_gap, resolve_window)
 from .report import render_json
 
 PROTOCOL_VERSION = "2025-03-26"
 
 
-def _scope(args: Dict[str, Any]) -> Scope:
-    """The requested scope.
+def _scope(args: Dict[str, Any], *, shas_given: bool = False) -> Scope:
+    """The requested scope, resolved through the ONE shared definition.
 
     `all_refs` is this server's own parameter name (the tool schema is
     frozen and cannot change), but `all` is accepted as a synonym by
     `options.scope_from_mapping` — so a client that learned the web
     transport's spelling still gets the scope it asked for instead of
     silently getting HEAD.
+
+    `shas_given` carries the one rule about WHEN a scope matters: once the
+    auditor names the commits explicitly, the scope is irrelevant. That rule
+    lives in `options.resolve_scope`, and the CLI and the web transport call
+    the same function — so the three surfaces cannot disagree about it.
     """
-    return scope_from_mapping(args)
+    return resolve_scope(args, shas_given=shas_given)
 
 
 def _audit_report(args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
@@ -73,9 +78,10 @@ def _audit_report(args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     except OptionError as exc:
         return None, str(exc)
 
-    scope = _scope(args)
+    # ONE definition of the scope rules — `options.resolve_scope` validates
+    # as well as resolving, so this server does not keep its own copy.
     try:
-        scope.validate()
+        scope = _scope(args)
     except OptionError as exc:
         return None, str(exc)
 
@@ -129,9 +135,14 @@ def _evidence_report(args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]
     path = args.get("path") or "."
     shas = args.get("shas")
     if shas is not None:
-        if not isinstance(shas, list):
+        # Types are CHECKED, not coerced (see `options`): the web transport
+        # rejects a non-string sha with `bad-shas`, so this server must not
+        # quietly turn 123 into "123" and go looking for a commit named
+        # "123" — two surfaces, two answers, for the same request.
+        if not isinstance(shas, list) or not all(
+                isinstance(s, str) for s in shas):
             return None, "bad-shas: shas must be a list of strings"
-        shas = [str(s) for s in shas]
+        shas = list(shas)
     else:
         shas = []
 
@@ -140,17 +151,14 @@ def _evidence_report(args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]
     except OptionError as exc:
         return None, str(exc)
 
-    scope = _scope(args)
-
-    # Scope only matters when shas are omitted (the CLI ignores scope once the
-    # auditor names the commits). The rule itself lives in
-    # `options.resolve_scope`, so the CLI, this server and the web endpoint
-    # cannot disagree about it.
-    if not shas:
-        try:
-            scope.validate()
-        except OptionError as exc:
-            return None, str(exc)
+    # ONE definition of the scope rules. `shas_given` carries the one rule
+    # about WHEN a scope matters: once the auditor names the commits
+    # explicitly, the scope is irrelevant — the CLI and the web transport
+    # apply the same rule from the same function.
+    try:
+        scope = _scope(args, shas_given=bool(shas))
+    except OptionError as exc:
+        return None, str(exc)
 
     try:
         since, until = resolve_window(args.get("since"), args.get("until"))
@@ -186,9 +194,10 @@ def _coverage_report(args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]
     except OptionError as exc:
         return None, str(exc)
 
-    scope = _scope(args)
+    # ONE definition of the scope rules — `options.resolve_scope` validates
+    # as well as resolving, so this server does not keep its own copy.
     try:
-        scope.validate()
+        scope = _scope(args)
     except OptionError as exc:
         return None, str(exc)
 
@@ -468,9 +477,11 @@ def serve() -> None:
         except ValueError as exc:
             out = {"jsonrpc": "2.0", "id": msg_id,
                    "error": {"code": -32601, "message": str(exc)}}
-        except (TypeError, AttributeError) as exc:
+        except (TypeError, AttributeError, OSError) as exc:
             # Answered as a JSON-RPC error rather than a crash: a dead
-            # server cannot serve the next request.
+            # server cannot serve the next request. OSError is in the list
+            # because an unreadable file (a roster on a locked drive) must
+            # not take the session down either.
             out = {"jsonrpc": "2.0", "id": msg_id,
                    "error": {"code": -32603, "message": str(exc)}}
         sys.stdout.write(json.dumps(out) + "\n")

@@ -19,20 +19,41 @@ Grouped by severity, in the order the findings were reported:
 * M5  the web rejected a scope+shas request the CLI and MCP accepted;
 * L1-L5  small divergences that made the same request answer differently
      depending on the surface, the interpreter, or the spelling.
+
+A second review round (R1-R4 below) re-read the v1.6.x result and found
+that the v1.6.0 refactor had not been finished:
+
+* R1  `options.resolve_scope` was called by ONE surface only — the CLI and
+     the MCP server each kept their own copy of the rules, and both carried
+     a comment claiming the rule lived in `options.py`;
+* R2  the MCP server COERCED a non-string sha (`[123]` -> `["123"]`) while
+     the web transport rejected it — the exact "guess instead of reject" the
+     v1.6.1 release was built to stop;
+* R3  `portfolio --session-gap` skipped validation, so an invalid gap was
+     caught per repository and reported as `portfolio-empty` — the real
+     cause hidden behind a wrong summary;
+* R4  an unreadable roster escaped as an exception: a traceback and exit 1
+     on the CLI (the contract is 0/2/4) and a dead MCP server process.
 """
+import io
 import json
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from examples.make_fixtures import build_mixed  # noqa: E402
+from ghostauthor import cli as cli_mod  # noqa: E402
+from ghostauthor import mcp_server as mcp_mod  # noqa: E402
+from ghostauthor import web as web_mod  # noqa: E402
 from ghostauthor.engine import build_report  # noqa: E402
 from ghostauthor.gitparse import (iter_commits, iter_coauthor_lines,  # noqa: E402
                                 parse_trailer_block)
@@ -41,7 +62,7 @@ from ghostauthor.models import (BUCKET_AGENT, CommitInfo,  # noqa: E402
 from ghostauthor.options import (OptionError, resolve_session_gap,  # noqa: E402
                                  scope_from_mapping)
 from ghostauthor.report import _scope_flags  # noqa: E402
-from ghostauthor.roster import (builtin_roster_path,  # noqa: E402
+from ghostauthor.roster import (RosterError, builtin_roster_path,  # noqa: E402
                                 load_roster)
 from ghostauthor.signer import SignError, plan_sign  # noqa: E402
 from ghostauthor.web import handle_audit, handle_evidence  # noqa: E402
@@ -342,3 +363,256 @@ class IterationTests(unittest.TestCase):
         # Two runs over the same state agree.
         again = build_report(iter_commits(str(self.mixed)), self.roster)
         self.assertEqual(rep.bucket_commit_shas, again.bucket_commit_shas)
+
+
+class SharedScopeDefinitionTests(unittest.TestCase):
+    """R1: the scope rules must be defined ONCE, in `options.py`.
+
+    v1.6.0 moved scope/window/roster/gap/gate into `options.resolve_scope`
+    so the three surfaces could not drift. But only the web transport
+    actually CALLED it: the CLI and the MCP server each kept their own copy
+    of the rules — and both carried a comment claiming the rule lived in
+    `options.py`. The copies happened to agree, so nothing was visibly
+    wrong; this test exists so the definition cannot quietly become two
+    again, and so a comment cannot claim a guarantee the code does not keep.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="ghostauthor-hard-scope-"))
+        cls.mixed = build_mixed(cls.tmp)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _agent_sha(self):
+        report = json.loads(subprocess.run(
+            [sys.executable, "-m", "ghostauthor.cli", str(self.mixed),
+             "--format", "json"],
+            capture_output=True, text=True, encoding="utf-8",
+            cwd=str(ROOT)).stdout)
+        return report["bucket_commit_shas"]["agent"][0]
+
+    def test_cli_resolves_scope_through_the_shared_module(self):
+        with mock.patch.object(cli_mod, "resolve_scope",
+                               wraps=cli_mod.resolve_scope) as spy:
+            with redirect_stdout(io.StringIO()):
+                rc = cli_mod.main([str(self.mixed), "--format", "json"])
+        self.assertEqual(rc, 0)
+        self.assertTrue(
+            spy.called,
+            "the CLI must resolve scope through options.resolve_scope")
+
+    def test_mcp_resolves_scope_through_the_shared_module(self):
+        with mock.patch.object(mcp_mod, "resolve_scope",
+                               wraps=mcp_mod.resolve_scope) as spy:
+            out, err = mcp_mod._audit_report({"path": str(self.mixed)})
+        self.assertIsNone(err)
+        self.assertIsNotNone(out)
+        self.assertTrue(
+            spy.called,
+            "the MCP server must resolve scope through options.resolve_scope")
+
+    def test_web_resolves_scope_through_the_shared_module(self):
+        with mock.patch.object(web_mod, "resolve_scope",
+                               wraps=web_mod.resolve_scope) as spy:
+            st, body = handle_audit({"entries": [{"path": str(self.mixed)}]})
+        self.assertEqual(st, 200)
+        self.assertTrue(
+            spy.called,
+            "the web transport must resolve scope through options.resolve_scope")
+
+    def test_named_commits_make_the_scope_irrelevant_on_every_surface(self):
+        # The one rule about WHEN a scope matters: once the auditor names
+        # the commits explicitly, the scope is irrelevant. All three
+        # surfaces now apply it from the same function.
+        sha = self._agent_sha()
+        cli = subprocess.run(
+            [sys.executable, "-m", "ghostauthor.cli", "evidence",
+             str(self.mixed), sha, "--all", "--ref", "x", "--format", "json"],
+            capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT))
+        self.assertEqual(cli.returncode, 0, cli.stderr)
+
+        out, err = mcp_mod._evidence_report(
+            {"path": str(self.mixed), "shas": [sha],
+             "all_refs": True, "ref": "x"})
+        self.assertIsNone(err)
+        self.assertIsNotNone(out)
+
+        st, body = handle_evidence(
+            {"path": str(self.mixed), "shas": [sha],
+             "all_refs": True, "ref": "x"})
+        self.assertEqual(st, 200)
+
+    def test_a_conflicting_scope_is_refused_on_every_surface(self):
+        # ...and the mirror image: WITHOUT named commits the same conflict
+        # is a request error everywhere, with the same code.
+        cli = subprocess.run(
+            [sys.executable, "-m", "ghostauthor.cli", str(self.mixed),
+             "--all", "--ref", "x"],
+            capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT))
+        self.assertEqual(cli.returncode, 2)
+        self.assertIn("ref-conflict", cli.stderr)
+
+        out, err = mcp_mod._audit_report(
+            {"path": str(self.mixed), "all_refs": True, "ref": "x"})
+        self.assertIsNone(out)
+        self.assertTrue(err.startswith("ref-conflict"), err)
+
+
+class ShaTypeParityTests(unittest.TestCase):
+    """R2: a wrong TYPE is a request error, never a guess.
+
+    The v1.6.1 release made the shared layer reject a mistyped value
+    instead of coercing it — `bool("false")` is True, so `"all": "false"`
+    used to mean "scan every ref". The MCP server still coerced the sha
+    list (`[123]` -> `["123"]`) while the web transport rejected it: two
+    surfaces, two answers, for the same request.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="ghostauthor-hard-shas-"))
+        cls.mixed = build_mixed(cls.tmp)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_mcp_rejects_a_non_string_sha_instead_of_coercing_it(self):
+        out, err = mcp_mod._evidence_report(
+            {"path": str(self.mixed), "shas": [123]})
+        self.assertIsNone(out)
+        self.assertIsNotNone(err)
+        self.assertTrue(
+            err.startswith("bad-shas"),
+            f"a non-string sha must be refused, not coerced: {err!r}")
+
+    def test_mcp_and_web_report_the_same_code_for_a_mistyped_sha(self):
+        out, err = mcp_mod._evidence_report(
+            {"path": str(self.mixed), "shas": [123]})
+        st, body = handle_evidence({"path": str(self.mixed), "shas": [123]})
+        self.assertEqual(st, 400)
+        self.assertEqual(body["error"]["code"], "bad-shas")
+        self.assertEqual(err.split(":")[0], body["error"]["code"])
+
+    def test_a_list_of_strings_is_still_accepted(self):
+        sha = json.loads(subprocess.run(
+            [sys.executable, "-m", "ghostauthor.cli", str(self.mixed),
+             "--format", "json"],
+            capture_output=True, text=True, encoding="utf-8",
+            cwd=str(ROOT)).stdout)["bucket_commit_shas"]["agent"][0]
+        out, err = mcp_mod._evidence_report(
+            {"path": str(self.mixed), "shas": [sha]})
+        self.assertIsNone(err)
+        self.assertIsNotNone(out)
+
+
+class PortfolioOptionTests(unittest.TestCase):
+    """R3: a bad option is a request error, reported once.
+
+    `portfolio --session-gap` skipped validation, so an invalid gap was
+    raised inside the per-repository scan and recorded as "this repository
+    failed". Every repository failed and the operator was told
+    `portfolio-empty: every repository failed to scan` — a wrong summary
+    that hid the real cause.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="ghostauthor-hard-pf-"))
+        build_mixed(cls.tmp)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_an_invalid_session_gap_names_the_gap_not_a_scanning_failure(self):
+        proc = subprocess.run(
+            [sys.executable, "-m", "ghostauthor.cli", "portfolio", str(self.tmp),
+             "--session-gap", "0", "--format", "json"],
+            capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT))
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("session-gap-invalid", proc.stderr)
+        self.assertNotIn("portfolio-empty", proc.stderr)
+
+    def test_a_valid_session_gap_still_scans(self):
+        proc = subprocess.run(
+            [sys.executable, "-m", "ghostauthor.cli", "portfolio", str(self.tmp),
+             "--session-gap", "30", "--format", "json"],
+            capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["totals"]["scanned"], 1)
+
+
+class RosterReadErrorTests(unittest.TestCase):
+    """R4: an unreadable roster is a request error, not a crash.
+
+    The roster loader caught only JSONDecodeError, so an `OSError` (or a
+    file that is not UTF-8) escaped: a traceback and exit 1 on the CLI —
+    the contract is 0/2/4 — and a dead MCP server process, the one failure
+    mode the server explicitly promises never happens.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="ghostauthor-hard-roster-"))
+        cls.mixed = build_mixed(cls.tmp)
+        # A file that exists, is readable, and is NOT valid UTF-8: a
+        # reproducible "cannot decode" that used to escape the loader.
+        cls.bad_utf8 = cls.tmp / "bad-utf8-roster.json"
+        cls.bad_utf8.write_bytes(b'{"version": 1, "agents": [\xff\xfe]}')
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_a_roster_that_is_not_utf8_is_rejected_with_a_code(self):
+        with self.assertRaises(RosterError) as ctx:
+            load_roster(self.bad_utf8)
+        self.assertIn("roster-json-invalid", str(ctx.exception))
+
+    def test_an_oserror_while_reading_a_roster_is_wrapped(self):
+        # A permission error / a locked handle / a vanished mount: the
+        # loader must report it, never let it escape.
+        roster = self.tmp / "any-roster.json"
+        roster.write_text('{"version": 1, "agents": []}', encoding="utf-8")
+        with mock.patch.object(Path, "read_text",
+                               side_effect=PermissionError(13, "denied")):
+            with self.assertRaises(RosterError) as ctx:
+                load_roster(roster)
+        self.assertIn("roster-unreadable", str(ctx.exception))
+
+    def test_the_cli_reports_an_unreadable_roster_as_exit_2(self):
+        proc = subprocess.run(
+            [sys.executable, "-m", "ghostauthor.cli", str(self.mixed),
+             "--roster", str(self.bad_utf8), "--format", "json"],
+            capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT))
+        self.assertEqual(proc.returncode, 2)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("roster-error", proc.stderr)
+
+    def test_the_mcp_server_answers_and_keeps_serving(self):
+        # One bad roster must not take the session down: the server
+        # answers the first request with an error and still serves the
+        # next one.
+        lines = [
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": "repo_authorship_report",
+                                   "arguments": {"path": str(self.mixed),
+                                                 "roster": str(self.bad_utf8)}}}),
+            json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                        "params": {"name": "repo_authorship_report",
+                                   "arguments": {"path": str(self.mixed)}}}),
+        ]
+        out = io.StringIO()
+        with mock.patch.object(sys, "stdin", iter(lines)), \
+                mock.patch.object(sys, "stdout", out):
+            mcp_mod.serve()
+        replies = [json.loads(line) for line in out.getvalue().splitlines()
+                   if line.strip()]
+        self.assertEqual(len(replies), 2,
+                         "the server must answer BOTH requests")
+        self.assertTrue(replies[0]["result"]["isError"])
+        self.assertFalse(replies[1]["result"]["isError"])
