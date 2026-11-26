@@ -12,7 +12,7 @@ license: MIT
 metadata:
   author: xiangsir
   tool: ghostauthor
-  version: "1.6.1"
+  version: "1.6.2"
 ---
 
 # AI Code Provenance Audit (ghostauthor)

@@ -352,6 +352,8 @@ agent——其中 7 个带公认的 `signing` 身份，所以
 - [x] v1.6.0 — **边界的唯一定义**：scope / 窗口 / roster / 会话间隔 / gate 全部收进 `ghostauthor/options.py`，由 CLI、MCP server、web transport 共同调用。修掉了三份拷贝各自漂移出来的差异——`/api/audit` 会静默忽略 `base`、会丢失 CLI 的错误码、scope 开关的拼法和自己的兄弟端点都不一样。纯读侧，零 schema bump
 - [x] v1.6.1 — **类型是请求错误，不是猜测**：`"all": "false"` 现在被拒绝（`scope-invalid`）而不是被 `bool()` 转成真值——旧行为会静默扫描全部 ref，给出一个看起来很对的错答案；`ref: 123` 从 500 变成 400（`ref-invalid`）；`roster_dir: []` 不再静默回退内置 roster；布尔值不再被当作分钟数或门禁阈值。MCP 新增第三个只读工具 `adoption_diagnosis`（与 `coverage --format json` 字节一致），`portfolio --max-ai-ratio` 支持组织级门禁（exit 4）。`coverage` 的修复建议改用真实 roster id（`claude` 而非 `claude-code`），`python -m ghostauthor` 可用。`portfolio.gate` 加法式新增，`schema_version` 仍为 `1`
 
+- [x] v1.6.2 — **把收口做完**：三个表面现在真正共用 `options.py` 里的同一个 scope 定义。v1.6.0 把规则搬了进去，但只有 web 真的调用它——CLI 与 MCP 各留了一份拷贝，两处注释还都写着「规则住在 options.py」；拷贝恰好一致，所以看不出问题。MCP 的 sha 类型改为检查而不是强转（`[123]` → `bad-shas`，与 web 同码）；`portfolio` 的选项在扫描前校验，不再用一句错的 `portfolio-empty` 盖住真因；名册读不出来是请求错误（`roster-error`，exit 2），不再是 traceback 也不是进程崩溃
+
 ## 免费与商业
 
 CLI 是 MIT，永远都是。对单个仓库而言，它也是完整的产品：审计、证据、签名、MCP server、本地仪表盘。
@@ -371,7 +373,7 @@ CLI 是 MIT，永远都是。对单个仓库而言，它也是完整的产品：
 
 ## 测试
 
-312 个测试钉的是**性质**，不是覆盖率：
+326 个测试钉的是**性质**，不是覆盖率：
 
 - **可复现性** — 同仓库状态 ⇒ 相同报告，与输入顺序无关
 - **trailer 块语义** — 负例：正文里的签名、签名后跟散文、CRLF message、缺邮箱、小写 key、续行

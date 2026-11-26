@@ -9,7 +9,7 @@ The read-side JSON contract is frozen (`schema_version` 1, see
 a rename, deletion or semantic change bumps it. The write path is opt-in and
 additive in every release below — no repository is ever signed by default.
 
-## [Unreleased]
+## [1.6.2] — 2026-11-26
 
 **A second read of the v1.6.x result found the refactor unfinished.** The
 v1.6.0 release moved scope / window / roster / gap / gate into
@@ -664,6 +664,7 @@ First release.
 - **Unborn-HEAD repositories** (everything staged, nothing committed) are
   classified `no-commits`, not a git failure.
 
+[1.6.2]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.6.2
 [1.6.1]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.6.1
 [1.6.0]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.6.0
 [1.4.0]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.4.0
