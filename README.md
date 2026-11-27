@@ -390,6 +390,7 @@ no recomputation, the MCP server does no execution). Keep it that way.
 - [x] v1.6.0 — **one definition of a boundary**: scope / window / roster / session gap / gate move into `ghostauthor/options.py`, called by the CLI, the MCP server and the web transport. Fixes the drift the copies had accumulated — `/api/audit` silently ignored `base`, lost the CLI's error codes, and spelled the scope flag differently from its own siblings. Read-side only — no schema bump
 - [x] v1.6.1 — **a wrong type is a request error, never a guess**: `"all": "false"` is now rejected (`scope-invalid`) instead of being coerced to true by `bool()` — the old behaviour silently scanned every ref and returned a confident, wrong answer; `ref: 123` went from a 500 to a 400 (`ref-invalid`); `roster_dir: []` no longer falls back to the builtin roster; a boolean is no longer accepted as a minute count or a gate limit. The MCP gains a third read-only tool `adoption_diagnosis` (byte-identical to `coverage --format json`), and `portfolio --max-ai-ratio` adds an organisation-level gate (exit 4). `coverage`'s fix suggestions now name real roster ids (`claude`, not `claude-code`), and `python -m ghostauthor` works. `portfolio.gate` is an additive key; `schema_version` stays `1`
 - [x] v1.6.2 — **the consolidation, finished**: all three surfaces now resolve scope through the same function in `options.py`. v1.6.0 moved the rules there, but only the web transport actually called it — the CLI and the MCP server each kept their own copy, and both carried a comment claiming the rule lived in `options.py`. The copies happened to agree, so nothing looked wrong. The MCP server also stops coercing a mistyped sha (`[123]` → `bad-shas`, the same code the web returns), `portfolio` validates its options before scanning instead of reporting a wrong summary, and an unreadable roster is a request error (`roster-error`, exit 2) rather than a traceback or a dead server
+- [x] v1.7.0 — **every remaining copy, retired**: the window filter and its two codes move to `options.apply_window` (engine, coverage and evidence all call it); the gate verdict and the ratio move to `engine.build_gate` / `engine.compute_ratio`, so the single-repo report and the portfolio decide on one number — a rounded copy used to give the opposite verdict at the same boundary; `gate.ratio` is the exact float (rounding is the renderers' job); `coverage`'s no-signatures advice names a roster agent that can actually sign; the finding-rule catalogue lives in one place (`models.RULE_INFO`); the documentation catches up (the third MCP tool, `scope-invalid`/`roster-invalid`, the 3.11/3.13 matrix, the Python 3.10 floor). `schema_version` stays `1`
 
 ## Free and commercial
 
@@ -416,7 +417,7 @@ schema next year. If you need the commercial surface, open an issue with
 
 ## Tests
 
-326 tests pin **properties**, not coverage:
+376 tests pin **properties**, not coverage:
 
 - **Reproducibility** — same repo state ⇒ identical report, regardless of input order
 - **Trailer-block semantics** — negative cases: signature in the body, signature followed by prose, CRLF messages, missing email, lowercase keys, continuation lines

@@ -4,4 +4,4 @@ Reads what agents already sign (git Co-Authored-By trailers), never
 guesses style. No network, no LLM, stdlib only.
 """
 
-__version__ = "1.6.2"
+__version__ = "1.7.0"

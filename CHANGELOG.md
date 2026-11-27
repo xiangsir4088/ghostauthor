@@ -9,7 +9,7 @@ The read-side JSON contract is frozen (`schema_version` 1, see
 a rename, deletion or semantic change bumps it. The write path is opt-in and
 additive in every release below — no repository is ever signed by default.
 
-## [Unreleased]
+## [1.7.0] — 2026-11-27
 
 **The same review that found the H1-H4 escapes also found twelve smaller
 ones.** None of them was a crash; all of them were **drift** — two copies of
@@ -96,6 +96,8 @@ behind are what let the answer drift.
 - 50 new boundary tests (`tests/test_boundaries.py`) pin the specific
   failure mode of every fix above, plus a red-proof run against the
   pre-fix tree (11 checks red on v1.6.2, green on this branch).
+
+326 → 376 tests / verify 28 steps green.
 
 ## [1.6.2] — 2026-11-26
 
@@ -752,6 +754,7 @@ First release.
 - **Unborn-HEAD repositories** (everything staged, nothing committed) are
   classified `no-commits`, not a git failure.
 
+[1.7.0]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.7.0
 [1.6.2]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.6.2
 [1.6.1]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.6.1
 [1.6.0]: https://atomgit.com/xiangsir/ghostauthor/releases/tag/v1.6.0
