@@ -66,7 +66,7 @@
   "gate": {
     "breached": false,
     "limit": 0.5,
-    "ratio": 0.333333
+    "ratio": 0.3333333333333333
   },
   "lines_by_bucket": {
     "agent": 12,

@@ -43,7 +43,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Tuple
 
-from .models import parse_window_value
+from .models import CommitInfo, parse_window_value
 from .roster import (Roster, RosterError, builtin_roster_path, load_roster,
                      load_roster_dir)
 
@@ -126,10 +126,12 @@ class Scope:
                 f"{type(self.all_refs).__name__}")
         if self.all_refs and self.ref:
             raise OptionError("ref-conflict",
-                              "use all_refs or ref, not both")
+                              "all_refs (the CLI spells it --all) cannot be "
+                              "combined with ref")
         if self.all_refs and self.base:
             raise OptionError("ref-conflict",
-                              "use all_refs or base, not both")
+                              "all_refs (the CLI spells it --all) cannot be "
+                              "combined with base")
         for name, value in (("ref", self.ref), ("base", self.base)):
             if value is None:
                 continue
@@ -210,6 +212,41 @@ def resolve_window(since_raw: Any = None,
     return since, until
 
 
+def apply_window(commits: List[CommitInfo], since: Optional[int] = None,
+                 until: Optional[int] = None) -> List[CommitInfo]:
+    """Filter commits to the time window — ONE definition of the window.
+
+    `since` is INCLUSIVE, `until` is EXCLUSIVE.
+
+    This used to be written out three times — in `engine`, `coverage` and
+    `evidence` — with the same filter and the same two error codes. Three
+    copies of a boundary is three copies that can drift, and `options.py`
+    existed precisely to stop that: it owned the *parsing* of the bounds
+    while the *filtering* stayed duplicated, so the window was only half
+    consolidated.
+
+    The bounds are validated BEFORE the filter, so contradictory bounds are
+    reported as `window-invalid` and not as `window-empty`: an invalid
+    window and an empty one are different diagnoses, and the audit, the
+    evidence and the coverage surfaces must not disagree about which it is.
+
+    Raises ValueError with the documented codes:
+    * `window-invalid` — since >= until;
+    * `no-commits`    — there is nothing to filter at all;
+    * `window-empty`  — the window selects no commit.
+    """
+    if since is not None and until is not None and since >= until:
+        raise ValueError("window-invalid: since must be before until")
+    if not commits:
+        raise ValueError("no-commits: nothing to aggregate")
+    windowed = [c for c in commits
+                if (since is None or c.authored_at >= since)
+                and (until is None or c.authored_at < until)]
+    if not windowed:
+        raise ValueError("window-empty: no commits within the window")
+    return windowed
+
+
 def resolve_roster(roster_path: Optional[str] = None,
                    roster_dir: Optional[str] = None) -> Roster:
     """Load the roster a request asked for: a file, a directory of files, or
@@ -222,6 +259,15 @@ def resolve_roster(roster_path: Optional[str] = None,
     A non-path value (a number, a list, an object) is a request error, not
     a fallback: ``[]`` is falsy, so a truthiness test used to route it to
     the builtin roster and answer a question the caller did not ask.
+
+    The surface-level code is `roster-error` on every surface — that is the
+    documented contract and it does not change. The PRECISE rule id
+    (``roster-agent-id``, ``roster-signing-roundtrip``, …) is carried in
+    the detail, and it always comes FIRST: `RosterError`'s message is
+    ``"<rule-id>: <detail>"``, so a caller can read the rule id straight
+    off the front of the detail without parsing prose. That is pinned by a
+    test, because a machine reading these errors should not have to guess
+    where the rule id sits.
     """
     for name, value in (("roster", roster_path), ("roster_dir", roster_dir)):
         if value is not None and not isinstance(value, (str, os.PathLike)):
@@ -236,6 +282,7 @@ def resolve_roster(roster_path: Optional[str] = None,
             return load_roster_dir(roster_dir)
         return load_roster(roster_path or builtin_roster_path())
     except RosterError as exc:
+        # `str(exc)` starts with the rule id — keep it that way.
         raise OptionError("roster-error", str(exc)) from None
 
 

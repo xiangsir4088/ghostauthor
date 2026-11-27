@@ -77,7 +77,11 @@ It needs `permissions: pull-requests: write` (included in the template).
 
 `.github/workflows/ci.yml` is what runs on ghostauthor itself:
 
-1. **test** — unit tests + `python verify.py` on a Linux/Windows × 3.9/3.11/3.13 matrix.
+1. **test** — unit tests + `python verify.py` on a Linux/Windows × 3.11/3.13 matrix.
+   Python 3.9 reached end of life and is no longer a supported version
+   (`requires-python >= 3.10`); it was dropped from the matrix rather than
+   left installed-but-untested, which is the one state this project does
+   not accept for a version it claims to support.
 2. **self-audit** — dogfoods the local CLI on this very repository (not the
    published action, so a broken change cannot pass by falling back to the
    last release): a JSON ledger of HEAD as a CI artifact, plus a PR-range
@@ -105,7 +109,7 @@ The composite action is referenced by tag. Two kinds exist:
 
 Declared floating aliases: `v1` (= latest 1.x stable).
 
-`verify` step 17 enforces this: every `uses: xiangsir4088/ghostauthor@<tag>` in
+`verify` step 16 enforces this: every `uses: xiangsir4088/ghostauthor@<tag>` in
 the shipped workflow examples and in `action.yml` must name either an existing
 git tag or a declared floating alias above. A reference to a tag that does not
 exist — or to an alias that is not declared here — goes red. This is the check

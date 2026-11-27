@@ -9,6 +9,94 @@ The read-side JSON contract is frozen (`schema_version` 1, see
 a rename, deletion or semantic change bumps it. The write path is opt-in and
 additive in every release below — no repository is ever signed by default.
 
+## [Unreleased]
+
+**The same review that found the H1-H4 escapes also found twelve smaller
+ones.** None of them was a crash; all of them were **drift** — two copies of
+one boundary that could answer differently, one quantity written with two
+roundings, a rule catalogue that lived in two files, a command in a
+deliverable that could not run, and documentation that had drifted away from
+the code it describes. The theme is the one the project has been working on
+since v1.6.0: **a boundary is defined once**, and the copies that were left
+behind are what let the answer drift.
+
+### Fixed
+- **The window filter is one function.** `since`/`until` were filtered in the
+  engine, in coverage and in evidence — the same predicate, written out
+  three times, with the same two error codes. `options.py` owned only the
+  *parsing*, so the window was half consolidated. `options.apply_window` now
+  owns the filter and the codes, and all three surfaces call it. The bounds
+  are validated before the filter, so an inverted window is `window-invalid`
+  everywhere — never `window-empty`.
+- **The gate verdict is one function, made on one number.** The portfolio
+  compared a **rounded** aggregate ratio while the single-repo report
+  compared the **exact** one, so the same boundary could give two different
+  verdicts: a ratio of 1/3 against a limit of `0.333333` breached in the
+  report and did **not** breach in the portfolio. `engine.build_gate` now
+  decides both, and `engine.compute_ratio` is the one definition of the
+  ratio.
+- **One quantity, one value, one rounding place.** `ai_ratio` and
+  `gate.ratio` are the same number, and the JSON used to carry two
+  differently-rounded copies of it (0.333333 and 0.3333333333333333 in the
+  same document). The JSON now carries the exact float and the **renderers**
+  round — including `render_markdown`, which recomputed the ratio from the
+  buckets instead of reading `report.ai_ratio`.
+- **`portfolio` rejects a bad gate limit before it scans.** Validated
+  inside the per-repository scan, an invalid limit made every repository
+  "fail" and the operator saw `portfolio-empty: every repository failed to
+  scan` instead of `gate-limit-invalid`.
+- **The `no-signatures` action prints a command that runs.** The coverage
+  diagnosis recommended `ghostauthor install-hook . --agent <agent-id>` even
+  when the roster had an agent that could sign. It now names the roster's
+  own signable id; the placeholder is used only when **no** roster agent has
+  a signing identity, and says so.
+- **The HTML brief's regenerate command is parsed, not guessed.** The scope
+  label was cut apart with string surgery, so a label that was not a range
+  produced `--base a --ref b..c` — a command that cannot run. The range
+  form is now parsed strictly (a second `..` or an empty side yields no
+  command at all), and a round-trip test pins the label format to the
+  command it produces.
+- **The scope conflict error names a flag the CLI really has.** It said
+  "use `all_refs` or `ref`" — a flag that does not exist on the command
+  line. It now says `all_refs (the CLI spells it --all)`.
+- **The finding-rule catalogue is one place.** The engine emitted five rule
+  ids and `report.py` described them; a rule added to one and not the other
+  rendered a SARIF result with an **empty** `shortDescription`, silently.
+  The catalogue now lives in `models.RULE_INFO`, the engine names its ids
+  from there, and the SARIF fallback is the rule id itself — never an empty
+  string.
+- **The supported-Python floor is honest.** Python 3.9 reached end of life;
+  `requires-python` is now `>=3.10` and the 3.9 classifier is gone. It was
+  dropped from the CI matrix rather than left installed-but-untested.
+
+### Changed
+- **`gate.ratio` in the report JSON is no longer rounded to 6 decimals.**
+  It is the exact float, the same value as `ai_ratio`. The schema is
+  unchanged — the key set, the types and `schema_version` are untouched;
+  only the precision of one number moved, to remove the two-answers-to-one-
+  quantity defect. The golden snapshot was re-pinned (one value changed).
+
+### Documentation
+- The roster error contract is now written down: the surface code stays
+  `roster-error`, and the precise rule id always comes **first** in the
+  detail (`roster-error: roster-agent-id: …`), so a machine can read it
+  without parsing prose.
+- "Byte-identical" now states its **version premise**: the report JSON
+  carries no version and is byte-stable across releases; SARIF, the HTML
+  brief and the bundle manifest embed the version, so diff the report JSON
+  across versions.
+- "What ships where" now states that the skill pack
+  (`ghostauthor-ai-code-audit/`) is **not** in the wheel — it is a separate
+  distribution channel, installed separately from `pip install ghostauthor`.
+- `verify.py`'s step numbers are continuous again (1–28; they used to skip
+  14, so a document citing a step pointed at the wrong check), and the
+  documents that cite steps were renumbered to match.
+
+### Tests
+- 50 new boundary tests (`tests/test_boundaries.py`) pin the specific
+  failure mode of every fix above, plus a red-proof run against the
+  pre-fix tree (11 checks red on v1.6.2, green on this branch).
+
 ## [1.6.2] — 2026-11-26
 
 **A second read of the v1.6.x result found the refactor unfinished.** The

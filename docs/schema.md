@@ -12,7 +12,7 @@ truth, two skins: there is no second JSON shape to keep in sync.
 
 ## How the freeze is enforced
 
-`python verify.py` step 18, on every run:
+`python verify.py` step 17, on every run:
 
 1. **Schema is valid** — `schema/report.schema.json` is checked against the
    frozen keyword subset implemented in `tests/schemacheck.py` (stdlib-only;
@@ -78,7 +78,7 @@ The contract changes in only two ways:
 - **Additive** (a new key, a new allowed value in an open-ended position):
   a **minor** release. `schema_version` stays as-is; the schema file, this
   document and the golden snapshot are updated in the same change —
-  verify step 18 enforces that the three cannot drift.
+  verify step 17 enforces that the three cannot drift.
 - **Breaking** (rename, delete, retype, semantic change): a **bump of
   `schema_version`** (and a major release). `schema_version` is a string so
   future values like `"1.1"` are representable without a type change.
@@ -119,13 +119,13 @@ mirrored elsewhere" — it is one behaviour, reachable from four places.
 
 | Option | Accepted spellings | Semantics | Code on failure |
 |---|---|---|---|
-| scope | `--all` / `--base` / `--ref`; `all` and `all_refs` are synonyms on every transport | `--base` scans the git range `REF..target`; the reported label is `base..target`, `all`, or the ref name | `ref-conflict`, `ref-invalid` |
+| scope | `--all` / `--base` / `--ref`; `all` and `all_refs` are synonyms on every transport | `--base` scans the git range `REF..target`; the reported label is `base..target`, `all`, or the ref name | `ref-conflict`, `ref-invalid`, `scope-invalid` |
 | window | `--since` / `--until` | `since` inclusive, `until` exclusive; epoch seconds, `YYYY-MM-DD` (UTC) or ISO 8601 | `window-bound-invalid`, `window-empty`, `window-invalid` |
-| roster | `--roster` / `--roster-dir` | one file, or every `*.json` in a directory merged in sorted filename order | `roster-conflict`, `roster-error` |
+| roster | `--roster` / `--roster-dir` | one file, or every `*.json` in a directory merged in sorted filename order | `roster-conflict`, `roster-error`, `roster-invalid` |
 | session gap | `--session-gap` | positive minutes | `session-gap-invalid` |
 | gate | `--max-ai-ratio` | `0..1`; a ratio exactly at the limit is a PASS | `gate-limit-invalid` |
 
-Two properties are enforced by `verify.py` step 28 and
+Two properties are enforced by `verify.py` step 27 and
 `tests/test_options.py`:
 
 1. **Same request, same code.** A rejected request produces the same
@@ -133,6 +133,21 @@ Two properties are enforced by `verify.py` step 28 and
    the CLI prints, not a transport-specific variant.
 2. **Same request, same bytes.** The web serves the CLI's exact JSON for
    the same scope, including a two-branch diff.
+
+### Reading a roster error
+
+The surface-level code for any roster problem is `roster-error` — one code,
+the same on every surface. The PRECISE rule id (one of the 21 in
+[roster.md](roster.md)) rides in the detail, and it always comes FIRST:
+
+```
+error: roster-error: roster-agent-id: id 'X' does not match ^[a-z0-9][a-z0-9_-]*$
+```
+
+So a machine does not have to parse prose to learn *which* rule failed:
+split the detail on the first `: ` and take the left side. The roster rule
+ids are the stable identifiers here; `roster-error` says "it was the
+roster", and the rule id says exactly what was wrong with it.
 
 The transports translate the code into their own channel, and the
 translation is pinned: the web maps request-level option errors to
@@ -150,9 +165,9 @@ CLI exits `2`.
 
 ## MCP surface (frozen with this schema)
 
-Two read-only tools, stdio JSON-RPC 2.0 (`protocolVersion` `2025-03-26`).
+Three read-only tools, stdio JSON-RPC 2.0 (`protocolVersion` `2025-03-26`).
 The server never executes anything beyond the read-only `git log` / `git
-show`, and never writes a file. Both return the CLI's exact bytes for the
+show`, and never writes a file. All three return the CLI's exact bytes for the
 same request, so they cannot disagree with it.
 
 `repo_authorship_report` — the full audit:
@@ -184,6 +199,18 @@ same request, so they cannot disagree with it.
   array of strings). A mistyped sha is **rejected, never coerced** — the
   same rule the web transport applies to the same field.
 
+`adoption_diagnosis` — why the ratio is low:
+
+- **inputs** (all optional): `path` (string, default `.`), `all_refs`
+  (boolean), `ref` (string), `base` (string), `since` / `until`,
+  `roster` (string), `roster_dir` (string)
+- **output**: the tool's text content is exactly
+  `render_coverage_json(coverage)` — byte-identical to
+  `coverage --format json`
+- **errors**: the same codes as the CLI. It is a DIAGNOSIS, not an
+  attribution: markers are hints, they never change a bucket, and a commit
+  with no marker produces no claim at all.
+
 ## Invariants the schema depends on
 
 1. **Provenance, not style** — only the trailer block is read;
@@ -195,6 +222,16 @@ same request, so they cannot disagree with it.
    `sort_keys` JSON, byte-stable.
 5. **Boundary semantics pinned by tests.**
 
+Byte stability is scoped to **one tool version**, and the schema makes
+that scope explicit: the report JSON carries **no version field**, so
+the frozen golden survives a release that changes nothing but the
+version number. The SARIF output, the HTML brief and the evidence
+bundle manifest *do* embed the version (they are human-facing
+deliverables and must name their producer), so their bytes change
+between releases. Diff the **report JSON** across versions; a SARIF or
+brief difference is usually just the version string. See
+[architecture.md](architecture.md#byte-stability-has-a-version-premise-and-only-the-report-json-is-exempt).
+
 ## The second frozen contract: the evidence JSON (v1.3)
 
 `ghostauthor evidence --format json` (and the `--bundle` `evidence.json`)
@@ -204,7 +241,7 @@ is pinned by `schema/evidence.schema.json` with the same discipline:
 `additionalProperties: false`, the same additive/bump compatibility
 policy (additive ⇒ minor, bump `schema_version` ⇒ breaking).
 
-Enforced by `verify.py` step 22, on every run: the schema is valid
+Enforced by `verify.py` step 21, on every run: the schema is valid
 within the frozen keyword subset; the real CLI output AND the bundle's
 `evidence.json` validate; the bundle's file equals the CLI's bytes; and
 mutations (removed key, added key, bogus `attribution` value) are
@@ -244,7 +281,7 @@ attribution *means*. Keeping them separate is what lets `coverage` grow
 neither may disagree with the report about one:
 
 - `coverage.signed_commits` must equal the report's
-  `commits_by_bucket.agent` for the same scope and window (verify step 25
+  `commits_by_bucket.agent` for the same scope and window (verify step 24
   recomputes the ratio and reconciles the author rows).
 - `coverage.signals` are **hints about missing signatures**. They are
   produced only for commits the report buckets as `unsigned`, they never

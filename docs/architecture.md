@@ -69,6 +69,44 @@ cannot be visible to one and invisible to the other. When they drifted,
 the signer could add a second agent's signature to a commit that already
 carried one — the exact state the write path claims never to create.
 
+### Where each boundary lives now
+
+The consolidation was finished in two rounds, and the placement follows one
+rule: a boundary that **decides** something lives with the thing that
+decides; a boundary that **parses** a request lives in `options.py`.
+
+| Boundary | Defined in | Shared by |
+|---|---|---|
+| scope (`--all` / `--ref` / `--base`) | `options.Scope` / `options.resolve_scope` | CLI, MCP, web |
+| window **parsing** (`--since` / `--until`) | `options.resolve_window` → `models.parse_window_value` | CLI, MCP, web |
+| window **filtering** + its codes | `options.apply_window` | engine, coverage, evidence |
+| roster (load + validate) | `options.resolve_roster` → `roster.py` | CLI, MCP, web |
+| session gap | `options.resolve_session_gap` | CLI, MCP, web |
+| gate limit (validation) | `options.resolve_gate` | CLI, MCP, web |
+| gate **verdict** (`ratio > limit`) | `engine.build_gate` | single-repo report, portfolio |
+| the ratio itself | `engine.compute_ratio` | single-repo report, portfolio |
+| finding rule ids + descriptions | `models.RULE_INFO` | engine (emits), report (describes) |
+
+Two of these were the last copies standing, and both had teeth:
+
+* the window **filter** was written out three times — in the engine, in
+  coverage and in evidence — with the same predicate and the same two
+  error codes. `options.py` owned only the *parsing*, so the window was
+  half consolidated. It is now one function.
+* the gate **verdict** was copied, not inherited, and the copy compared a
+  ROUNDED ratio while the report compared the exact one. The same
+  boundary could therefore give two different verdicts: a ratio of 1/3
+  against a limit of `0.333333` breached in the single-repo report and did
+  not breach in the portfolio. One function now decides both, and the
+  number a document reports is the number the verdict was made on.
+
+The ratio is one more case of the same rule. The JSON carries the **exact**
+float; rounding belongs to the renderers. A report that carried `ai_ratio`
+and `gate.ratio` as two differently-rounded copies of one number was a
+document that could not explain itself — and a renderer that recomputed the
+ratio from the buckets instead of reading `report.ai_ratio` was
+re-deriving a number the model already held.
+
 ## Invariants (the parts that keep the tool honest for years)
 
 1. **Provenance, not style.** Only the git trailer block is read. Unsigned
@@ -87,6 +125,55 @@ carried one — the exact state the write path claims never to create.
    `--max-ai-ratio` is a PASS (`>` not `>=`). Whoever changes the
    semantics must change the test on purpose.
 
+### Byte stability has a version premise (and only the report JSON is exempt)
+
+"Same repo state ⇒ same bytes" is true **within one tool version**. It is
+not a promise that two releases produce identical files, and the documents
+that carry a version say so:
+
+| Artifact | Embeds the version? | Byte-stable across releases? |
+|---|---|---|
+| the report JSON (`--format json`) | no | **yes** — the golden snapshot is version-independent |
+| SARIF (`--format sarif`) | yes (`tool.driver.version`) | no |
+| the HTML brief (`--format html`) | yes (`Tool: ghostauthor <version>`) | no |
+| the evidence bundle manifest | yes (`tool: ghostauthor <version>`) | no |
+
+This split is deliberate. The report JSON is the **frozen, machine-checked
+contract** — its golden snapshot must survive a release that changes
+nothing but the version number, so it carries no version at all. The
+others are human-facing deliverables whose whole point is to name the tool
+that produced them; a brief that does not say which version produced it is
+not an auditable document.
+
+The consequence is a rule for anyone diffing artifacts across releases:
+**diff the report JSON, not the brief.** A SARIF or HTML difference
+between two versions is usually just the version string, and treating it
+as a finding wastes a review cycle.
+
+## What ships where
+
+The wheel on PyPI and the skill pack in the marketplace are **two
+different distributions of two different things**, and confusing them
+makes an install fail in a way that looks like a bug:
+
+| Channel | What it carries | How it is installed |
+|---|---|---|
+| PyPI (`pip install ghostauthor`) | the `ghostauthor` Python package: the CLI, the MCP server, the web transport, the builtin roster | `pip install ghostauthor` |
+| the skill pack (`ghostauthor-ai-code-audit/`) | a `SKILL.md` — instructions for an agent that drives the CLI/MCP, plus its assets | copied into an agent's skill directory, or installed from a skill marketplace |
+
+`ghostauthor-ai-code-audit/` is **not** in the wheel, and that is not an
+oversight: it has no `__init__.py`, so it is not a Python package, and
+`[tool.setuptools.packages.find] include = ["ghostauthor*"]` only matches
+packages. Shipping it inside the wheel would put a directory of
+instructions where an importable module belongs.
+
+So the skill pack has its own versioning and its own release channel: it
+is versioned with the tool it drives (`SKILL.md` states the tool version
+it was written for) and published as a skill artifact. A `pip install
+ghostauthor` therefore does **not** install the skill — that is a
+separate, deliberate step, and the README says which version each
+channel is on.
+
 ## Exit codes (the CI contract)
 
 | Code | Meaning |
@@ -97,14 +184,15 @@ carried one — the exact state the write path claims never to create.
 
 ## MCP contract
 
-Read-only. Two tools: `repo_authorship_report` (the full audit) and
-`commit_evidence` (per-commit evidence). No network, no writes, no
-process execution beyond the read-only `git log` inside the repository it is
-pointed at. **It never auto-executes anything.** The moment a tool can act,
-the risk model changes from "advice" to "decision that must be supervised" —
-this tool refuses that change of category.
+Read-only. Three tools: `repo_authorship_report` (the full audit),
+`commit_evidence` (per-commit evidence) and `adoption_diagnosis` (why the
+ratio is low). No network, no writes, no process execution beyond the
+read-only `git log` inside the repository it is pointed at. **It never
+auto-executes anything.** The moment a tool can act, the risk model changes
+from "advice" to "decision that must be supervised" — this tool refuses
+that change of category.
 
-Both tools return the CLI's **exact bytes** for the same request, and the
+All three tools return the CLI's **exact bytes** for the same request, and the
 server answers a malformed request with a JSON-RPC error rather than
 dying: one bad line must not take the session — and every request after
 it — down with it.

@@ -32,7 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from .engine import DEFAULT_SESSION_GAP_MINUTES, build_report
+from .engine import (DEFAULT_SESSION_GAP_MINUTES, build_gate, build_report,
+                     compute_ratio)
 from .gitparse import GitError, iter_commits
 from .models import Report
 from .report import HTML_CSS, SCHEMA_VERSION
@@ -186,8 +187,8 @@ def aggregate_totals(entries: Sequence[RepoEntry]) -> Dict[str, object]:
         "failed": len(entries) - len(ok),
         "total_commits": total_commits,
         "agent_commits": total_agent,
-        "ai_ratio": round(total_agent / total_commits, 6) if total_commits else 0.0,
-        "mean_repo_ratio": (round(sum(e.ai_ratio for e in ok) / len(ok), 6)
+        "ai_ratio": compute_ratio(total_agent, total_commits),
+        "mean_repo_ratio": (sum(e.ai_ratio for e in ok) / len(ok)
                             if ok else 0.0),
     }
 
@@ -214,17 +215,17 @@ def aggregate_agents(entries: Sequence[RepoEntry]) -> List[AgentTotal]:
 def gate_result(ratio: float, limit: Optional[float]) -> Optional[Dict]:
     """The organisation-level gate verdict, or None when no limit was given.
 
-    Boundary rule is inherited verbatim from the single-repo report:
-    ``breached = ratio > limit``, so a ratio exactly at the limit PASSES.
+    Delegates to `engine.build_gate` — the SAME function the single-repo
+    report uses — so the boundary rule (`breached = ratio > limit`, exactly
+    at the limit PASSES) and the reported ratio live in one place. It used
+    to be a copy, and the copy compared a ROUNDED ratio while the report
+    compared the exact one: the same boundary could then give two
+    different verdicts.
+
     Kept pure and separate from `build_portfolio` so the boundary can be
     pinned without git.
     """
-    if limit is None:
-        return None
-    if not (0.0 <= limit <= 1.0):
-        raise ValueError("gate-limit-invalid: must be within [0, 1]")
-    return {"limit": limit, "ratio": round(ratio, 6),
-            "breached": ratio > limit}
+    return build_gate(ratio, limit)
 
 
 def build_portfolio(paths: Sequence[Path], roster: Roster,
@@ -237,6 +238,14 @@ def build_portfolio(paths: Sequence[Path], roster: Roster,
     """Scan each path and aggregate. Never raises for a single bad repo."""
     entries: List[RepoEntry] = []
     errors: List[Dict[str, str]] = []
+
+    # The gate limit is validated HERE, before any repository is scanned.
+    # Validated inside the per-repository scan instead, an invalid limit
+    # was caught per repo and recorded as "this repository failed" — so
+    # every repository failed and the operator saw `portfolio-empty:
+    # every repository failed to scan` instead of `gate-limit-invalid`.
+    if max_ai_ratio is not None and not (0.0 <= max_ai_ratio <= 1.0):
+        raise ValueError("gate-limit-invalid: must be within [0, 1]")
 
     for repo in paths:
         repo_path = str(Path(repo).resolve())

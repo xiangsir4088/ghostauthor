@@ -11,11 +11,45 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 from .models import (ALL_BUCKETS, BUCKET_AGENT, BUCKET_COSIGNED,
-                     BUCKET_UNSIGNED, COAUTHOR_LINE_RE, AgentStats,
-                     AuthorStats, CommitInfo, Finding, Report, Session)
+                     BUCKET_UNSIGNED, COAUTHOR_LINE_RE, RULE_COSIGNED_UNKNOWN,
+                     RULE_MULTI_AGENT, RULE_TRAILER_IN_BODY,
+                     RULE_TRAILER_NO_EMAIL, AgentStats, AuthorStats, CommitInfo,
+                     Finding, Report, Session)
+from .options import apply_window
 from .roster import AgentRule, Roster
 
 DEFAULT_SESSION_GAP_MINUTES = 360
+
+
+def compute_ratio(numerator: int, denominator: int) -> float:
+    """The agent-signed ratio — ONE definition.
+
+    The JSON carries the EXACT float; rounding is the renderers' job. That
+    matters because a document that carries the same quantity twice
+    (`ai_ratio` and `gate.ratio`) must carry it twice with the SAME value:
+    rounding one of them produced a report where `gate.ratio` was
+    0.333333 while `ai_ratio` was 0.3333333333333333 — two numbers for one
+    quantity in one artifact.
+    """
+    return numerator / denominator if denominator else 0.0
+
+
+def build_gate(ratio: float, limit: Optional[float]) -> Optional[Dict]:
+    """The gate verdict — ONE definition, shared by the single-repo report
+    and the organisation-level portfolio.
+
+    The boundary rule is `breached = ratio > limit`, so a ratio exactly at
+    the limit PASSES. The comparison lives here and nowhere else: the
+    portfolio used to run it against a ROUNDED ratio while the report ran
+    it against the exact one, so the same boundary could give two
+    different verdicts (e.g. ratio 1/3 against a limit of 0.333333:
+    breached in the report, not breached in the portfolio).
+    """
+    if limit is None:
+        return None
+    if not (0.0 <= limit <= 1.0):
+        raise ValueError("gate-limit-invalid: must be within [0, 1]")
+    return {"limit": limit, "ratio": ratio, "breached": ratio > limit}
 
 
 def attribute_commit(c: CommitInfo, roster: Roster
@@ -60,18 +94,13 @@ def build_report(commits: List[CommitInfo],
         raise ValueError("session-gap-invalid: must be positive minutes")
     if max_ai_ratio is not None and not (0.0 <= max_ai_ratio <= 1.0):
         raise ValueError("gate-limit-invalid: must be within [0, 1]")
-    if since is not None and until is not None and since >= until:
-        raise ValueError("window-invalid: since must be before until")
     if not commits:
         raise ValueError("no-commits: nothing to aggregate")
 
-    # Time window: since INCLUSIVE, until EXCLUSIVE. Boundary semantics are
-    # pinned by tests — the same discipline as the gate boundary.
-    windowed = [c for c in commits
-                if (since is None or c.authored_at >= since)
-                and (until is None or c.authored_at < until)]
-    if not windowed:
-        raise ValueError("window-empty: no commits within the window")
+    # Time window: since INCLUSIVE, until EXCLUSIVE. The filter AND its two
+    # error codes live in `options.apply_window` — one definition, shared
+    # with the coverage and evidence surfaces.
+    windowed = apply_window(commits, since, until)
 
     # Deterministic order: commit data only (authored_at + sha), never wall clock.
     ordered = sorted(windowed, key=lambda c: (c.authored_at, c.sha))
@@ -94,7 +123,7 @@ def build_report(commits: List[CommitInfo],
         for t, (rule, _reason) in zip(c.trailers, per):
             if rule is not None and not t.email:
                 findings.append(Finding(
-                    rule="trailer-no-email", severity="info",
+                    rule=RULE_TRAILER_NO_EMAIL, severity="info",
                     evidence=f"{c.sha[:12]}: {t.raw}",
                     detail="matched by name only; trailer carries no <email>"))
             elif rule is None:
@@ -107,7 +136,7 @@ def build_report(commits: List[CommitInfo],
                 # keeps its documented meaning (the evidence for the
                 # `cosigned` bucket).
                 findings.append(Finding(
-                    rule="cosigned-unknown", severity="warn",
+                    rule=RULE_COSIGNED_UNKNOWN, severity="warn",
                     evidence=f"{c.sha[:12]}: {t.raw}",
                     detail="Co-Authored-By present but no roster rule matched"))
 
@@ -129,13 +158,13 @@ def build_report(commits: List[CommitInfo],
                      and ln.strip() not in trailer_lines]
         if body_hits:
             findings.append(Finding(
-                rule="trailer-in-body", severity="warn",
+                rule=RULE_TRAILER_IN_BODY, severity="warn",
                 evidence=f"{c.sha[:12]}: {body_hits[0]}",
                 detail="Co-Authored-By line outside the trailer block is prose, "
                        "not metadata — ignored by design"))
         if len(matched_ids) > 1:
             findings.append(Finding(
-                rule="multi-agent-commit", severity="info",
+                rule=RULE_MULTI_AGENT, severity="info",
                 evidence=c.sha[:12],
                 detail="commit carries signatures of several agents: "
                        + ", ".join(matched_ids)))
@@ -202,11 +231,8 @@ def build_report(commits: List[CommitInfo],
     ]
 
     agent_count = bucket_commits[BUCKET_AGENT]
-    ratio = agent_count / total
-    gate: Optional[Dict] = None
-    if max_ai_ratio is not None:
-        gate = {"limit": max_ai_ratio, "ratio": round(ratio, 6),
-                "breached": ratio > max_ai_ratio}
+    ratio = compute_ratio(agent_count, total)
+    gate = build_gate(ratio, max_ai_ratio)
 
     window = {"since": since, "until": until} \
         if (since is not None or until is not None) else None

@@ -4,6 +4,11 @@ Runs every subprocess with sys.executable (no hard-coded interpreter
 path) and prints, for each step, what passed — and prints anything it
 skipped and WHY. Silent skips are worse than errors, so there are none.
 
+The `# N.` comments number the steps in EXECUTION order — the first
+`step()` call is step 1 — because the documents cite steps by that
+numbering; a comment out of step with the call order would point a
+reader at the wrong check.
+
 Exit code 0 means the whole matrix is green.
 """
 from __future__ import annotations
@@ -336,7 +341,7 @@ def main() -> int:
         step("web: HTTP server, JSON byte-identical to the CLI, error codes",
              web_ok)
 
-        # 15. two-branch diff (--base) + author x agent cross-tab
+        # 14. two-branch diff (--base) + author x agent cross-tab
         def diff_xtab_ok():
             import os
             import subprocess
@@ -412,14 +417,14 @@ def main() -> int:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    # 16. housekeeping: no stray build artifacts in the source tree
+    # 15. housekeeping: no stray build artifacts in the source tree
     def clean_ok():
         for stray in (ROOT / "build", ROOT / "dist", ROOT / "ghostauthor.egg-info"):
             check(f"clean_{stray.name}", not stray.exists())
 
     step("no build artifacts in the source tree", clean_ok)
 
-    # 17. CI assets: action.yml + workflows + docs stay consistent
+    # 16. CI assets: action.yml + workflows + docs stay consistent
     def ci_assets_ok():
         action = ROOT / "action.yml"
         check("ci_action_exists", action.exists(), "action.yml missing")
@@ -550,7 +555,7 @@ def main() -> int:
 
     step("CI assets (action.yml + workflows + docs) consistent", ci_assets_ok)
 
-    # 18. schema freeze: report.schema.json is valid, the real CLI output
+    # 17. schema freeze: report.schema.json is valid, the real CLI output
     #     validates against it, the golden snapshot is byte-stable, and the
     #     freeze is ENFORCED (a mutated report must be rejected).
     def schema_freeze_ok():
@@ -606,7 +611,7 @@ def main() -> int:
     step("schema freeze (report.schema.json + golden + enforced)",
          schema_freeze_ok)
 
-    # 19. write path (v1.0): the four invariants, machine-checked on a
+    # 18. write path (v1.0): the four invariants, machine-checked on a
     #     fixture repo — round-trip (load-bearing), idempotency,
     #     conflict refusal, default-off. Error paths are pinned too.
     def write_path_ok():
@@ -746,7 +751,7 @@ def main() -> int:
     step("write path (v1.0): round-trip / idempotency / conflict / "
          "default-off", write_path_ok)
 
-    # 20. commit-msg hook (v1.1): install / sign-at-commit / idempotent /
+    # 19. commit-msg hook (v1.1): install / sign-at-commit / idempotent /
     #     conflict / uninstall + roster lint
     def hook_lint_ok():
         import json as _json
@@ -917,7 +922,7 @@ def main() -> int:
     step("hook (v1.1): install / sign-at-commit / idempotent / conflict / "
          "uninstall + roster lint", hook_lint_ok)
 
-    # 21. evidence (v1.2): audit agreement / byte stability / reproducible
+    # 20. evidence (v1.2): audit agreement / byte stability / reproducible
     #     bundle
     def evidence_ok():
         import hashlib
@@ -1028,7 +1033,7 @@ def main() -> int:
     step("evidence (v1.2): audit agreement / byte stability / "
          "reproducible bundle", evidence_ok)
 
-    # 22. evidence schema freeze (v1.3): evidence.schema.json is valid,
+    # 21. evidence schema freeze (v1.3): evidence.schema.json is valid,
     #     the real CLI output AND the bundle's evidence.json validate
     #     against it, and the freeze is ENFORCED — the same discipline
     #     as the report schema.
@@ -1107,7 +1112,7 @@ def main() -> int:
     step("evidence freeze (v1.3): schema valid / real output validates / "
          "mutations rejected", evidence_freeze_ok)
 
-    # 23. MCP surface parity (v1.4 + v1.6.1): the server exposes 3 tools and
+    # 22. MCP surface parity (v1.4 + v1.6.1): the server exposes 3 tools and
     #     each is byte-identical to the CLI for the same request. The full
     #     param surface is mirrored, the bundle is absent (the server never
     #     writes files), and every request-level / repo-level error code is
@@ -1271,7 +1276,7 @@ def main() -> int:
          "adoption diagnosis — byte-identical to the CLI, every error code",
          mcp_parity_ok)
 
-    # 24. Web evidence endpoint: /api/evidence serves the SAME bytes as the
+    # 23. Web evidence endpoint: /api/evidence serves the SAME bytes as the
     #     CLI's `evidence --format json`, maps request/repo errors to
     #     400/404/422 (sha-unknown is 422), and the index page carries the
     #     evidence UI. Owns its fixture (the shared one was cleaned up above).
@@ -1357,7 +1362,7 @@ def main() -> int:
     step("Web evidence: /api/evidence byte-identical to the CLI, "
          "400/404/422 mapping, UI markers", web_evidence_ok)
 
-    # 25. Adoption diagnosis: the audit's number is exact; `coverage` says
+    # 24. Adoption diagnosis: the audit's number is exact; `coverage` says
     #     why it is what it is and what to do next. Pins the verdict bands,
     #     the reconciliation between author rows and bucket totals, window
     #     semantics, and byte stability.
@@ -1468,7 +1473,7 @@ def main() -> int:
          "reconciliation, window semantics, byte stability, web parity",
          coverage_ok)
 
-    # 26. Portfolio: the weighted aggregate (never a mean of ratios), a
+    # 25. Portfolio: the weighted aggregate (never a mean of ratios), a
     #     failed repository recorded instead of aborting, per-agent rollup,
     #     and a self-contained HTML brief that is byte-stable.
     def portfolio_ok():
@@ -1571,7 +1576,7 @@ def main() -> int:
     step("portfolio (v1.5): weighted aggregate, partial-failure recording, "
          "agent rollup, self-contained byte-stable HTML", portfolio_ok)
 
-    # 27. HTML audit brief: a deliverable, not a screenshot. No timestamp,
+    # 26. HTML audit brief: a deliverable, not a screenshot. No timestamp,
     #     no remote asset, no script; measured numbers present; the method
     #     stated. Byte stability is what lets it sit next to the JSON.
     def html_brief_ok():
@@ -1612,7 +1617,7 @@ def main() -> int:
     step("HTML audit brief (v1.5): byte-stable, self-contained, timestamp-"
          "free, carries the measured numbers + method", html_brief_ok)
 
-    # 28. Option parity (v1.6): ONE definition of scope / window / roster /
+    # 27. Option parity (v1.6): ONE definition of scope / window / roster /
     #     session gap / gate, shared by the CLI, the MCP server and the web
     #     transport. The property this step protects: the same request in
     #     produces the same error CODE on every surface, and the web serves
@@ -1705,7 +1710,7 @@ def main() -> int:
          "CLI, MCP and web report the same code and the same bytes",
          option_parity_ok)
 
-    # 29. Hardening (v1.6): the defects an independent review found. Each
+    # 28. Hardening (v1.6): the defects an independent review found. Each
     #     check below corresponds to a bug that WAS reproducible — the
     #     project's rule is that a fix which cannot go red is a slogan.
     def hardening_ok():

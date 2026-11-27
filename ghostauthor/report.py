@@ -11,11 +11,23 @@ import html
 import json
 from typing import List
 
-from .models import Report
+from .models import RULE_AI_RATIO_GATE, RULE_INFO, Report
 
 
 def _pct(n: int, total: int) -> str:
     return f"{(n / total * 100):.1f}%" if total else "0.0%"
+
+
+def _pct_ratio(ratio: float) -> str:
+    """A ratio as a percentage — the renderer's job to round.
+
+    The JSON carries the exact float; rounding happens here, in the
+    presentation layer. A renderer that recomputed the ratio from the
+    buckets instead of reading `report.ai_ratio` was re-deriving a number
+    the model already held — and this module's own rule is "never
+    recomputes anything".
+    """
+    return f"{ratio * 100:.1f}%"
 
 
 # The JSON contract generation. Additive changes (new keys) keep it; a
@@ -76,29 +88,6 @@ def render_json(report: Report) -> str:
     return json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
-_RULE_INFO = {
-    "cosigned-unknown": (
-        "Signature not in roster",
-        "A commit carries a Co-Authored-By trailer that no roster rule "
-        "matched. Add the agent to the roster to make its provenance "
-        "auditable."),
-    "trailer-in-body": (
-        "Signature-shaped line outside the trailer block",
-        "A Co-Authored-By-shaped line was found in the message body, "
-        "where git does not treat it as metadata. It is ignored by "
-        "design."),
-    "trailer-no-email": (
-        "Agent signature without email",
-        "The signature matched the roster by name only; the trailer "
-        "carries no <email>."),
-    "multi-agent-commit": (
-        "Multiple agents signed one commit",
-        "The commit carries signatures of several agents; per-agent "
-        "attribution overlaps (the cap invariant)."),
-    "ai-ratio-gate": (
-        "AI-signed ratio above limit",
-        "The agent-signed commit ratio exceeds --max-ai-ratio."),
-}
 
 
 def render_sarif(report: Report) -> str:
@@ -110,7 +99,11 @@ def render_sarif(report: Report) -> str:
     results: List[dict] = []
 
     def _rule(rule_id: str) -> None:
-        name, short = _RULE_INFO.get(rule_id, (rule_id, ""))
+        # The catalogue lives in `models.RULE_INFO` — the same place the
+        # engine names its rule ids from, so a rule cannot exist in one and
+        # be missing from the other. The fallback is the rule id itself:
+        # an EMPTY description is the silent failure this used to have.
+        name, short = RULE_INFO.get(rule_id, (rule_id, rule_id))
         if not any(r["id"] == rule_id for r in rules):
             rules.append({"id": rule_id,
                           "name": f"ghostauthor.{rule_id}",
@@ -130,9 +123,9 @@ def render_sarif(report: Report) -> str:
             }],
         })
     if report.gate is not None and report.gate["breached"]:
-        _rule("ai-ratio-gate")
+        _rule(RULE_AI_RATIO_GATE)
         results.append({
-            "ruleId": "ai-ratio-gate",
+            "ruleId": RULE_AI_RATIO_GATE,
             "level": "error",
             "message": {"text": (
                 f"ai ratio {report.gate['ratio']} exceeds limit "
@@ -234,7 +227,7 @@ def render_markdown(report: Report) -> str:
     out.append(f"- repo: `{report.repo_path}`")
     out.append(f"- ref: `{report.ref}`")
     out.append(f"- total commits: {total}")
-    out.append(f"- AI-signed ratio: **{_pct(report.commits_by_bucket['agent'], total)}**")
+    out.append(f"- AI-signed ratio: **{_pct_ratio(report.ai_ratio)}**")
     out.append("")
     out.append("| bucket | commits | lines touched |")
     out.append("|---|---:|---:|")
@@ -372,13 +365,26 @@ def _scope_flags(ref: str) -> str:
     revision. The brief tells the reader how to regenerate the document,
     so that command has to be one that actually works: `--all` for the
     all-refs scope, `--base`/`--ref` for a range, `--ref` for one ref.
+
+    The label format is produced by `options.Scope.label` and is frozen by
+    the report schema (`ref`), so this function READS that format rather
+    than inventing one. It therefore parses strictly: a label it does not
+    understand yields NO flags instead of a plausible-looking command that
+    cannot run. A round-trip test pins the two sides together, so a change
+    to the label format that forgets this function goes red rather than
+    silently emitting `--ref garbage` into a deliverable.
     """
     if ref == "all":
         return "--all"
     if ".." in ref:
         base, _, target = ref.partition("..")
+        # A range is `base..target` and exactly that: a second ".." means
+        # this is not a label we produced, so emit nothing rather than a
+        # command that cannot run.
+        if not base or not target or ".." in target:
+            return ""
         flags = f"--base {base}"
-        if target and target != "HEAD":
+        if target != "HEAD":
             flags += f" --ref {target}"
         return flags
     if ref and ref != "HEAD":

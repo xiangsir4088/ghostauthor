@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # Commit classification buckets (exhaustive; missing counts are 0, never absent)
 BUCKET_AGENT = "agent"        # at least one trailer matched the roster
@@ -114,6 +114,46 @@ class Finding:
     detail: str
 
 
+# The finding rule catalogue — ONE place.
+#
+# The engine emits these ids and `report.py` describes them. They used to
+# live in two files, and a rule added to one but not the other rendered a
+# SARIF result with an empty `shortDescription` — silently, because the
+# renderer fell back to a blank description. The catalogue is pure data, so
+# it belongs here with the rest of the data model; the engine names the ids
+# through the constants below, and a test pins that every emitted id has a
+# description.
+RULE_COSIGNED_UNKNOWN = "cosigned-unknown"
+RULE_TRAILER_IN_BODY = "trailer-in-body"
+RULE_TRAILER_NO_EMAIL = "trailer-no-email"
+RULE_MULTI_AGENT = "multi-agent-commit"
+RULE_AI_RATIO_GATE = "ai-ratio-gate"
+
+RULE_INFO: Dict[str, Tuple[str, str]] = {
+    RULE_COSIGNED_UNKNOWN: (
+        "Signature not in roster",
+        "A commit carries a Co-Authored-By trailer that no roster rule "
+        "matched. Add the agent to the roster to make its provenance "
+        "auditable."),
+    RULE_TRAILER_IN_BODY: (
+        "Signature-shaped line outside the trailer block",
+        "A Co-Authored-By-shaped line was found in the message body, "
+        "where git does not treat it as metadata. It is ignored by "
+        "design."),
+    RULE_TRAILER_NO_EMAIL: (
+        "Agent signature without email",
+        "The signature matched the roster by name only; the trailer "
+        "carries no <email>."),
+    RULE_MULTI_AGENT: (
+        "Multiple agents signed one commit",
+        "The commit carries signatures of several agents; per-agent "
+        "attribution overlaps (the cap invariant)."),
+    RULE_AI_RATIO_GATE: (
+        "AI-signed ratio above limit",
+        "The agent-signed commit ratio exceeds --max-ai-ratio."),
+}
+
+
 @dataclass
 class Report:
     """The complete, deterministic result of one scan.
@@ -141,8 +181,8 @@ class Report:
 #
 # `datetime.fromisoformat` is deliberately not used: CPython 3.11 widened it
 # to accept most ISO 8601 forms (compact dates like 20260101, nanosecond
-# precision), while 3.9 accepts almost none of them. The project supports
-# 3.9+, so the same bound would be accepted on one supported interpreter and
+# precision), while 3.10 accepts almost none of them. The project supports
+# 3.10+, so the same bound would be accepted on one supported interpreter and
 # rejected on another — the accepted set would depend on the interpreter
 # instead of on the code. That is exactly the drift this project refuses:
 # the same request must give the same answer everywhere.

@@ -36,6 +36,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .engine import attribute_commit
 from .models import BUCKET_AGENT, BUCKET_COSIGNED, BUCKET_UNSIGNED, CommitInfo
+from .options import apply_window
 from .roster import Roster
 
 # Deterministic markers that specific tools write when they do NOT emit a
@@ -221,16 +222,12 @@ def build_coverage(commits: List[CommitInfo], roster: Roster,
                    until: Optional[int] = None) -> Coverage:
     """Attribute every commit once, then explain the gaps.
 
-    Raises ValueError with the same window/empty codes as `build_report`,
-    so a caller can treat both commands' failures identically.
+    Raises ValueError with the same window/empty codes as `build_report`
+    (`window-invalid` / `no-commits` / `window-empty`), so a caller can
+    treat both commands' failures identically — the filter and its codes
+    come from the same `options.apply_window`.
     """
-    if since is not None and until is not None and since >= until:
-        raise ValueError("window-invalid: since must be before until")
-    windowed = [c for c in commits
-                if (since is None or c.authored_at >= since)
-                and (until is None or c.authored_at < until)]
-    if not windowed:
-        raise ValueError("window-empty: no commits within the window")
+    windowed = apply_window(commits, since, until)
     ordered = sorted(windowed, key=lambda c: (c.authored_at, c.sha))
 
     buckets: Dict[str, int] = {BUCKET_AGENT: 0, BUCKET_COSIGNED: 0,
@@ -361,6 +358,19 @@ def _roster_signing_id(roster: Roster, marker_id: str) -> Optional[str]:
     return None
 
 
+def _first_signable_id(roster: Roster) -> Optional[str]:
+    """The first roster agent that can actually sign, or None.
+
+    Deterministic (roster order) and only ids that HAVE a `signing`
+    identity — naming an id that cannot sign would install a hook that
+    fails at commit time, which is worse than saying "add a rule first".
+    """
+    for agent in roster.agents:
+        if agent.signing is not None:
+            return agent.id
+    return None
+
+
 def _actions(ratio: float, total: int, signed: int,
              signals: List[CoverageSignal],
              unmatched: List[UnmatchedTrailer],
@@ -405,14 +415,28 @@ def _actions(ratio: float, total: int, signed: int,
                     f"the trailer is simply not being written. {tail}"),
             command=command))
     if total and signed == 0:
+        # A command that cannot run teaches a new user that the tool is
+        # broken — so the placeholder `--agent <agent-id>` is only used
+        # when NO roster agent can sign. Otherwise the roster's own
+        # signable id is named, and the command works as printed.
+        signable = _first_signable_id(roster)
+        if signable is not None:
+            command = f"ghostauthor install-hook . --agent {signable}"
+            tail = (f" The roster's `{signable}` can sign today — use the "
+                    "agent your commits actually come from.")
+        else:
+            command = "ghostauthor install-hook . --agent <agent-id>"
+            tail = (" No roster agent has a signing identity yet — add one "
+                    "rule first (see docs/roster.md), then install the hook "
+                    "with that id.")
         out.append(Action(
             code="no-signatures",
             detail=("No commit in scope carries a roster-recognized "
                     "signature. Either this repository predates the "
                     "convention, or its agents do not emit standard trailers. "
                     "Start the convention at HEAD and let the ledger fill "
-                    "forward — history is not rewritten."),
-            command="ghostauthor install-hook . --agent <agent-id>"))
+                    "forward — history is not rewritten." + tail),
+            command=command))
     elif 0 < ratio < 0.8:
         out.append(Action(
             code="close-the-gap",

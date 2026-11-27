@@ -24,6 +24,7 @@ from . import __version__
 from .engine import attribute_commit
 from .gitparse import get_commit, iter_commits
 from .models import CommitInfo
+from .options import apply_window
 from .roster import Roster
 
 
@@ -50,24 +51,17 @@ def select_evidence_commits(path, shas: Optional[List[str]] = None,
     CLI; each caller translates those into its own error code.
     """
     shas = list(shas) if shas else []
-    if since is not None and until is not None and since >= until:
-        # Validated BEFORE filtering, so the contradictory bounds are
-        # reported as `window-invalid` — the code the audit and the
-        # coverage surfaces return for the same request. Filtering first
-        # would report `window-empty`, which is the wrong diagnosis: the
-        # window is not empty of commits, it is invalid.
-        raise ValueError("window-invalid: since must be before until")
     if shas:
         commits = [get_commit(str(path), s) for s in shas]
     else:
         commits = iter_commits(str(path), all_refs=all_refs, ref=ref, base=base)
+    # The window filter and its two error codes come from
+    # `options.apply_window` — the same definition the audit and the
+    # coverage surfaces use. It validates the bounds BEFORE filtering, so
+    # contradictory bounds are reported as `window-invalid` and not as
+    # `window-empty`: the window is not empty of commits, it is invalid.
     if since is not None or until is not None:
-        windowed = [c for c in commits
-                    if (since is None or c.authored_at >= since)
-                    and (until is None or c.authored_at < until)]
-        if not windowed:
-            raise ValueError("window-empty: no commits within the window")
-        commits = windowed
+        commits = apply_window(commits, since, until)
     if not shas:
         commits = sorted(commits, key=lambda c: (c.authored_at, c.sha))
     return commits

@@ -160,8 +160,11 @@ Ordered by cost-effectiveness for a solo maintainer.
    event. Everything else points at it.
 2. **MCP directories and agent skill marketplaces.** The MCP server is a
    distribution channel: an agent that can call `repo_authorship_report` is
-   an agent that surfaces the tool inside someone's editor. The packaged
-   skill (`ghostauthor-ai-code-audit/`) exists for this.
+   an agent that surfaces the tool inside someone's editor. The skill pack
+   (`ghostauthor-ai-code-audit/`) exists for this — it is a **separate
+   distribution**, not part of the wheel: it carries instructions for an
+   agent, not importable modules, so it ships as a skill artifact and is
+   installed separately from `pip install ghostauthor`.
 3. **The compliance content angle.** The defensible narrative — *"your AI
    code percentage is not auditable, and here is why"* — is a better
    acquisition asset than any feature list. It is also the article a CISO
